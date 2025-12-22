@@ -5,30 +5,30 @@ import java.net.*;
 import java.util.concurrent.*;
 
 public class RedisServer {
-	private final int port;
-	private final ExecutorService threadPool;
+    private final int port;
+    private final ExecutorService threadPool;
     private final Database db = new Database();
-	
-	public RedisServer() {
-		this.port = 6379;
-		this.threadPool = Executors.newCachedThreadPool();
-	}
-    
-	public void start() {
+
+    public RedisServer() {
+        this.port = 6379;
+        this.threadPool = Executors.newCachedThreadPool();
+    }
+
+    public void start() {
         try {
-        	ServerSocket serverSocket = new ServerSocket();
-            serverSocket.setReuseAddress(true); // ✅ allow immediate reuse
+            ServerSocket serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true); // allow immediate reuse
             serverSocket.bind(new InetSocketAddress(port));
-            System.out.println("🚀 Redis server listening on port " + port);
+            System.out.println("Redis server listening on port " + port);
 
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("🧠 New client connected: " + clientSocket.getInetAddress());
-                threadPool.submit(new ClientHandler(clientSocket, serverSocket, db));
+                System.out.println("New client connected: " + clientSocket.getInetAddress());
+                threadPool.submit(new ClientHandler(clientSocket, db));
             }
 
         } catch (IOException e) {
-            System.err.println("❌ Server error: " + e.getMessage());
+            System.err.println("Server error: " + e.getMessage());
         }
     }
 
