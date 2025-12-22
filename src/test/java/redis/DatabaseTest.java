@@ -167,7 +167,7 @@ public class DatabaseTest {
                 db.hset("foo", "bar", "baz");
                 assertEquals(false, db.ifHashKeyTypeMismatch("foo"));
             }
-            
+
             @Test
             @DisplayName("string and hash keys should not interfere with each other")
             void testHashAndStringSeparation() {
@@ -340,7 +340,6 @@ public class DatabaseTest {
                 assertTrue(mismatch, "Expected a type mismatch for string key used in hash command");
             }
         }
-        
 
         @Nested
         @DisplayName("HGET")
@@ -462,6 +461,125 @@ public class DatabaseTest {
                 db.hset("myhash", "k", "v");
                 assertEquals(-1, db.ttl("myhash"));
             }
+        }
+
+        @Nested
+        @DisplayName("HSETNX")
+        class HSETNX {
+            @Test
+            @DisplayName("should set value if field does not exist")
+            void testHSetNxNewField() {
+                int res = db.hsetnx("h", "f", "v");
+                assertEquals(1, res);
+                assertEquals("v", db.hashget("h", "f"));
+            }
+
+            @Test
+            @DisplayName("should not set value if field exists")
+            void testHSetNxExistingField() {
+                db.hset("h", "f", "v1");
+                int res = db.hsetnx("h", "f", "v2");
+                assertEquals(0, res);
+                assertEquals("v1", db.hashget("h", "f"));
+            }
+        }
+
+        @Nested
+        @DisplayName("HEXISTS")
+        class HEXISTS {
+            @Test
+            @DisplayName("should return 1 if field exists")
+            void testHExistsTrue() {
+                db.hset("h", "f", "v");
+                assertEquals(1, db.hexists("h", "f"));
+            }
+
+            @Test
+            @DisplayName("should return 0 if field does not exist")
+            void testHExistsFalse() {
+                db.hset("h", "f", "v");
+                assertEquals(0, db.hexists("h", "missing"));
+            }
+        }
+
+        @Nested
+        @DisplayName("HLEN")
+        class HLEN {
+            @Test
+            @DisplayName("should return correct number of fields")
+            void testHLen() {
+                db.hset("h", "f1", "v1");
+                db.hset("h", "f2", "v2");
+                assertEquals(2, db.hlen("h"));
+            }
+
+            @Test
+            @DisplayName("should return 0 for non-existing hash")
+            void testHLenMissing() {
+                assertEquals(0, db.hlen("missing"));
+            }
+        }
+
+        @Nested
+        @DisplayName("Delete Hash Key")
+        class DeleteHashKey {
+            @Test
+            @DisplayName("should remove entire hash")
+            void testDeleteHashKey() {
+                db.hset("h", "f", "v");
+                assertEquals(1, db.deleteHashKey("h"));
+                assertEquals(false, db.containsHashKey("h"));
+            }
+        }
+
+    } // End HashStore
+
+    @Nested
+    @DisplayName("General Commands")
+    class GeneralCommands {
+        Database db;
+
+        @BeforeEach
+        void beforeEach() {
+            db = new Database();
+        }
+
+        @Test
+        @DisplayName("keyExists should return true for string or hash keys")
+        void testKeyExists() {
+            db.set("s", "val");
+            db.hset("h", "f", "v");
+
+            assertTrue(db.keyExists("s"));
+            assertTrue(db.keyExists("h"));
+            assertEquals(false, db.keyExists("missing"));
+        }
+
+        @Test
+        @DisplayName("flushAll should clear everything")
+        void testFlushAll() {
+            db.set("s", "val");
+            db.hset("h", "f", "v");
+            db.expire("s", 100);
+
+            db.flushAll();
+
+            assertEquals(null, db.get("s"));
+            assertEquals(false, db.containsHashKey("h"));
+            assertEquals(-2, db.ttl("s")); // fully gone
+        }
+
+        @Test
+        @DisplayName("getKeysMatching should support wildcards")
+        void testKeysMatching() {
+            db.set("user:1", "a");
+            db.set("user:2", "b");
+            db.set("post:1", "c");
+
+            var keys = db.getKeysMatching("user:*");
+            assertEquals(2, keys.size());
+            assertTrue(keys.contains("user:1"));
+            assertTrue(keys.contains("user:2"));
         }
     }
 }
