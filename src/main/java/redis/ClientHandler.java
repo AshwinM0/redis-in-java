@@ -7,12 +7,17 @@ import java.net.SocketException;
 import redis.resp.RespParser;
 import redis.resp.RespWriter;
 import redis.resp.Value;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class ClientHandler implements Runnable {
+
+    private static final Logger LOG = Logger.getLogger(ClientHandler.class.getName());
+
     private final Socket client;
     private final Database db;
     private final RespWriter writer = new RespWriter();
-    private final CommandProcessor commandProcessor = new CommandProcessor();
+    private static final CommandProcessor COMMAND_PROCESSOR = new CommandProcessor();
 
     public ClientHandler(Socket client, Database sharedDB) {
         this.client = client;
@@ -29,7 +34,7 @@ public class ClientHandler implements Runnable {
                     // Parse next RESP message
                     Value request = RespParser.readValue(in);
                     if (request == null) {
-                        System.out.println("Client disconnected: " + client.getInetAddress());
+                        LOG.info(() -> "Client disconnected: " + client.getRemoteSocketAddress());
                         break;
                     }
 
@@ -41,55 +46,37 @@ public class ClientHandler implements Runnable {
                     }
 
                     String command = request.array.get(0).str.toUpperCase();
-                    commandProcessor.executeCommand(command, db, writer, out, request.array);
+                    COMMAND_PROCESSOR.executeCommand(command, db, writer, out, request.array);
+                    out.flush();
+                } catch (EOFException | SocketException e) {
+                    // Abrupt or normal client disconnect
+                    LOG.info(() -> "Client disconnected: " + client.getRemoteSocketAddress());
+                    break;
 
-                    out.flush();
-                } catch (SocketException e) {
-                    // Client disconnected abruptly
-                    System.out.println("Client disconnected: " + client.getInetAddress());
-                    break;
                 } catch (IOException e) {
-                    // Check for connection reset in the message
-                    if (isConnectionReset(e)) {
-                        System.out.println("Client disconnected: " + client.getInetAddress());
-                        break;
-                    }
-                    System.err.println("I/O error: " + e.getMessage());
+                    // Real I/O problem
+                    LOG.log(Level.WARNING, "I/O error from client " + client.getRemoteSocketAddress(), e);
                     break;
+
                 } catch (Exception e) {
-                    System.err.println("Internal error: " + e.getMessage());
-                    writer.writeError(out, "internal server error");
-                    out.flush();
+                    // Command bug or unexpected server error
+                    LOG.log(Level.SEVERE, "Internal error: " + e.getMessage());
+                    try {
+                        writer.writeError(out, "internal server error");
+                        out.flush();
+                    } catch (IOException ignored) {
+                        break; // client probably gone
+                    }
                 }
             }
         } catch (IOException e) {
-            // Check if this is a normal disconnection scenario
-            if (!isConnectionReset(e)) {
-                System.err.println("Connection error: " + e.getMessage());
-            } else {
-                System.out.println("Client disconnected: " + client.getInetAddress());
-            }
+            LOG.log(Level.WARNING, "Failed to initialize client handler for " + client.getRemoteSocketAddress(), e);
         } finally {
             try {
                 client.close();
             } catch (IOException e) {
-                System.err.println("Failed to close socket: " + e.getMessage());
+                LOG.log(Level.WARNING, "Failed to close socket: " + e.getMessage());
             }
         }
-    }
-
-    /**
-     * Checks if the exception indicates a client disconnection (connection reset).
-     */
-    private boolean isConnectionReset(Exception e) {
-        String message = e.getMessage();
-        if (message == null) {
-            return false;
-        }
-        message = message.toLowerCase();
-        return message.contains("connection reset") ||
-                message.contains("broken pipe") ||
-                message.contains("socket closed") ||
-                message.contains("stream closed");
     }
 }
