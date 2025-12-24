@@ -4,7 +4,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.util.List;
 
-import redis.Database;
+import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 

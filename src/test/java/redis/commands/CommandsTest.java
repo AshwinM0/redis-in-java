@@ -15,7 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import redis.Database;
+import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 
