@@ -1,4 +1,4 @@
-package redis;
+package redis.core;
 
 import java.util.ArrayList;
 import java.util.HashSet;

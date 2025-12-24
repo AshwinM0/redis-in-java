@@ -1,6 +1,6 @@
 package redis.commands;
 
-import redis.Database;
+import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 

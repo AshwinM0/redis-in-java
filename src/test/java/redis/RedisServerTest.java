@@ -16,6 +16,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import redis.server.RedisServer;
+
 public class RedisServerTest {
 
     private RedisServer server;

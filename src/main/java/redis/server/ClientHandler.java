@@ -1,10 +1,12 @@
-package redis;
+package redis.server;
 
 import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
 
 import redis.resp.RespParser;
+import redis.core.CommandProcessor;
+import redis.core.Database;
 import redis.pubsub.PubSubManager;
 import redis.resp.RespParseException;
 import redis.resp.RespWriter;

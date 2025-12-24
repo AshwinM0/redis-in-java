@@ -6,7 +6,7 @@ import java.util.List;
 
 import static redis.utils.CommandUtils.*;
 
-import redis.Database;
+import redis.core.Database;
 import redis.pubsub.PubSubManager;
 import redis.resp.RespWriter;
 import redis.resp.Value;
