@@ -1,4 +1,5 @@
 package redis.commands;
+
 import static redis.utils.CommandUtils.*;
 
 import redis.core.Database;
@@ -51,36 +52,56 @@ public class SetCommand implements Command {
 
                     if (token.equals("EX")) {
                         Integer sec = parseIntArg(writer, out, num);
-                        if (sec == null) { abort = true; break; }
+                        if (sec == null) {
+                            abort = true;
+                            break;
+                        }
                         expireSeconds = sec;
                     } else if (token.equals("PX")) {
                         Long ms = parseLongArg(writer, out, num);
-                        if (ms == null) { abort = true; break; }
+                        if (ms == null) {
+                            abort = true;
+                            break;
+                        }
                         expireSeconds = (int) (ms / 1000L);
                     } else if (token.equals("EXAT")) {
                         Long unixSec = parseLongArg(writer, out, num);
-                        if (unixSec == null) { abort = true; break; }
-                        expireSeconds = (int) (unixSec - (System.currentTimeMillis() / 1000L));
+                        if (unixSec == null) {
+                            abort = true;
+                            break;
+                        }
+                        expireSeconds = (int) (unixSec - (db.getClock().nowMillis() / 1000L));
                     } else { // PXAT
                         Long unixMs = parseLongArg(writer, out, num);
-                        if (unixMs == null) { abort = true; break; }
-                        expireSeconds = (int) ((unixMs - System.currentTimeMillis()) / 1000L);
+                        if (unixMs == null) {
+                            abort = true;
+                            break;
+                        }
+                        expireSeconds = (int) ((unixMs - db.getClock().nowMillis()) / 1000L);
                     }
                     hasExpireOption = true;
                     break;
                 }
-                case "NX": nx = true; break;
-                case "XX": xx = true; break;
-                case "KEEPTTL": keepTTL = true; break;
+                case "NX":
+                    nx = true;
+                    break;
+                case "XX":
+                    xx = true;
+                    break;
+                case "KEEPTTL":
+                    keepTTL = true;
+                    break;
                 default:
                     writer.writeError(out, "syntax error");
                     abort = true;
                     break;
             }
-            if (abort) break;
+            if (abort)
+                break;
         }
 
-        if (abort) return;
+        if (abort)
+            return;
 
         if (nx && xx) {
             writer.writeError(out, "NX and XX options at the same time are not compatible");
@@ -96,17 +117,17 @@ public class SetCommand implements Command {
             writer.writeBulk(out, null);
             return;
         }
-        if(xx && db.get(key) == null) {
+        if (xx && db.get(key) == null) {
             writer.writeBulk(out, null);
             return;
         }
-        
+
         if (keepTTL) {
             Long expiry = db.getExpiry(key);
             db.set(key, value);
-            if (expiry != null) db.setExpiry(key, expiry);
-        }
-        else {
+            if (expiry != null)
+                db.setExpiry(key, expiry);
+        } else {
             db.setAndRemoveOlder(key, value);
         }
 

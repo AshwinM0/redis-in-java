@@ -1,5 +1,6 @@
 package redis.core;
 
+import redis.time.Clock;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -8,22 +9,30 @@ import java.util.Random;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
+import redis.time.SystemClock;
+
 public class Database {
-	private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<>();
-	private final ConcurrentHashMap<String, Long> expiryMap = new ConcurrentHashMap<>();
+    private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> expiryMap = new ConcurrentHashMap<>();
+
+    private final Clock clock;
 
     private final ConcurrentHashMap<String, ConcurrentHashMap<String, String>> hashStore = new ConcurrentHashMap<>();
-    //private final ConcurrentHashMap<String, ConcurrentHashMap<String, Long>> hashExpiryMap = new ConcurrentHashMap<>();
-	
-	private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
-	
-	public Database() {
+
+    private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
+
+    public Database() {
+        this(new SystemClock());
+    }
+
+    public Database(Clock clock) {
+        this.clock = clock;
         // Background thread to clean expired keys every 1 seconds
         cleaner.scheduleAtFixedRate(this::removeSampledKeysIfExpired, 5, 1, TimeUnit.SECONDS);
     }
 
     private void removeSampledKeysIfExpired() {
-        long now = System.currentTimeMillis();
+        long now = clock.nowMillis();
         List<Map.Entry<String, Long>> entriesToCheck = getRandomExpiryEntries(20);
         int expiredCount = 0;
         for (Map.Entry<String, Long> e : entriesToCheck) {
@@ -55,24 +64,26 @@ public class Database {
 
     private List<Map.Entry<String, Long>> getRandomExpiryEntries(int count) {
         List<Map.Entry<String, Long>> entries = expiryMap.entrySet()
-            .stream()
-            .collect(Collectors.toList());
+                .stream()
+                .collect(Collectors.toList());
 
         int n = entries.size();
-        if (n <= count) return entries;
+        if (n <= count)
+            return entries;
 
         Random rand = ThreadLocalRandom.current();
         return rand.ints(0, n)
-            .distinct()
-            .limit(count)
-            .mapToObj(entries::get)
-            .collect(Collectors.toList());
+                .distinct()
+                .limit(count)
+                .mapToObj(entries::get)
+                .collect(Collectors.toList());
     }
 
     private boolean isExpired(String key) {
         Long exp = expiryMap.get(key);
-        if (exp == null) return false;
-        if (System.currentTimeMillis() > exp) {
+        if (exp == null)
+            return false;
+        if (clock.nowMillis() > exp) {
             expiryMap.remove(key);
             store.remove(key);
             hashStore.remove(key);
@@ -88,14 +99,18 @@ public class Database {
     }
 
     public synchronized String getKeyType(String key) {
-        if (store.containsKey(key)) return "string";
-        if (hashStore.containsKey(key)) return "hash";
+        if (store.containsKey(key))
+            return "string";
+        if (hashStore.containsKey(key))
+            return "hash";
         return null;
     }
-	
-	public synchronized void setAndRemoveOlder(String key, String value) {
-        if (store != null) store.remove(key);
-        if (hashStore != null) hashStore.remove(key);
+
+    public synchronized void setAndRemoveOlder(String key, String value) {
+        if (store != null)
+            store.remove(key);
+        if (hashStore != null)
+            hashStore.remove(key);
 
         store.put(key, value);
         expiryMap.remove(key); // Remove any old expiry
@@ -107,7 +122,7 @@ public class Database {
         return;
     }
 
-	public synchronized String get(String key) {
+    public synchronized String get(String key) {
         if (isExpired(key)) {
             store.remove(key);
             expiryMap.remove(key);
@@ -115,12 +130,14 @@ public class Database {
         }
         return store.get(key);
     }
-	
-	public synchronized int del(String key) {
-        boolean removed = false;
-        if (store.remove(key) != null) removed = true;
 
-        if (hashStore.remove(key) != null) removed = true;
+    public synchronized int del(String key) {
+        boolean removed = false;
+        if (store.remove(key) != null)
+            removed = true;
+
+        if (hashStore.remove(key) != null)
+            removed = true;
 
         expiryMap.remove(key);
         return removed ? 1 : 0;
@@ -129,12 +146,13 @@ public class Database {
     public synchronized boolean stringStoreContainsKey(String key) {
         return store.containsKey(key);
     }
-	
-	public synchronized boolean expire(String key, int seconds) {
-        long expiryTime = System.currentTimeMillis() + (seconds * 1000L);
+
+    public synchronized boolean expire(String key, int seconds) {
+        long expiryTime = clock.nowMillis() + (seconds * 1000L);
 
         boolean exists = store.containsKey(key) || hashStore.containsKey(key);
-        if (!exists) return false;
+        if (!exists)
+            return false;
 
         if (seconds <= 0) {
             del(key);
@@ -147,13 +165,14 @@ public class Database {
 
     public synchronized boolean keyExists(String key) {
         // cleanup expired keys first
-        ttl(key); 
+        ttl(key);
 
         return store.containsKey(key) || hashStore.containsKey(key);
     }
-	
-	public synchronized long ttl(String key) {
-        boolean keyExists = store.containsKey(key) || hashStore.containsKey(key); // Add future stores here: setStore, listStore, etc.
+
+    public synchronized long ttl(String key) {
+        boolean keyExists = store.containsKey(key) || hashStore.containsKey(key); // Add future stores here: setStore,
+
         if (!keyExists) {
             return -2;
         }
@@ -163,8 +182,8 @@ public class Database {
             return -1; // No expiry
         }
 
-        long remainingMillis = expiryMap.get(key) - System.currentTimeMillis();
-        
+        long remainingMillis = expiryMap.get(key) - clock.nowMillis();
+
         if (remainingMillis <= 0) {
             // Expired → cleanup and return -2
             expiryMap.remove(key);
@@ -184,20 +203,21 @@ public class Database {
     }
 
     public synchronized int hsetnx(String key, String field, String value) {
-        Map<String,String> map = hashStore.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
-        if (map.containsKey(field)) return 0;
+        Map<String, String> map = hashStore.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
+        if (map.containsKey(field))
+            return 0;
 
         map.put(field, value);
         return 1;
     }
 
     public synchronized int hexists(String key, String field) {
-        Map<String,String> map = hashStore.get(key);
+        Map<String, String> map = hashStore.get(key);
         return (map != null && map.containsKey(field)) ? 1 : 0;
     }
 
     public synchronized int hlen(String key) {
-        Map<String,String> map = hashStore.get(key);
+        Map<String, String> map = hashStore.get(key);
         return (map == null) ? 0 : map.size();
     }
 
@@ -212,26 +232,28 @@ public class Database {
         }
         Map<String, String> map = hashStore.get(hashKey);
 
-        if (map == null) return null;
+        if (map == null)
+            return null;
         return map.get(field);
     }
 
     public synchronized List<Map.Entry<String, String>> getAllHashEntries(String hashKey) {
-            if (isExpired(hashKey)) {
-                del(hashKey);
-                return List.of(); // empty list if expired
-            }
+        if (isExpired(hashKey)) {
+            del(hashKey);
+            return List.of(); // empty list if expired
+        }
 
-            Map<String, String> map = hashStore.get(hashKey);
-            if (map == null) {
-                return List.of(); // empty list if not found
-            }
+        Map<String, String> map = hashStore.get(hashKey);
+        if (map == null) {
+            return List.of(); // empty list if not found
+        }
 
-            return new ArrayList<>(map.entrySet());
+        return new ArrayList<>(map.entrySet());
     }
 
     public synchronized int deleteHashField(String hashKey, String field) {
-        if (!hashStore.containsKey(hashKey)) return 0;
+        if (!hashStore.containsKey(hashKey))
+            return 0;
         Map<String, String> map = hashStore.get(hashKey);
 
         String removed = map.remove(field);
@@ -242,7 +264,8 @@ public class Database {
     }
 
     public synchronized int deleteHashKey(String hashKey) {
-        if (!hashStore.containsKey(hashKey)) return 0;
+        if (!hashStore.containsKey(hashKey))
+            return 0;
         hashStore.remove(hashKey);
         return 1;
     }
@@ -254,6 +277,10 @@ public class Database {
 
     public Long getExpiry(String key) {
         return expiryMap.get(key);
+    }
+
+    public Clock getClock() {
+        return clock;
     }
 
     public void setExpiry(String key, Long expiryTimeMillis) {
@@ -285,7 +312,7 @@ public class Database {
         expiryMap.clear();
     }
 
-	public void shutdown() {
+    public void shutdown() {
         cleaner.shutdownNow();
     }
 }

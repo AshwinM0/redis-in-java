@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.*;
 
 import redis.core.Database;
+import redis.mocks.FakeClock;
 
 public class DatabaseTest {
 
@@ -13,10 +14,12 @@ public class DatabaseTest {
     @DisplayName("String store")
     class StringStore {
         Database db;
+        FakeClock clock;
 
         @BeforeEach
         void beforeEach() {
-            db = new Database();
+            clock = new FakeClock(0);
+            db = new Database(clock);
         }
 
         @Nested
@@ -76,7 +79,7 @@ public class DatabaseTest {
             void testGetExpiredKey() throws InterruptedException {
                 db.set("temp", "data");
                 db.expire("temp", 1); // expire in 1 second
-                Thread.sleep(1500); // wait for 1.5 seconds
+                clock.advanceSeconds(2);
                 assertEquals(null, db.get("temp"));
             }
 
@@ -92,7 +95,7 @@ public class DatabaseTest {
             void testGetRemovesExpiredKey() throws InterruptedException {
                 db.set("temp", "data");
                 db.expire("temp", 1); // expire in 1 second
-                Thread.sleep(1500); // wait for 1.5 seconds
+                clock.advanceSeconds(2);
                 assertEquals(null, db.get("temp"));
                 assertEquals(false, db.stringStoreContainsKey("temp"));
             }
@@ -216,8 +219,9 @@ public class DatabaseTest {
                 Database db = new Database();
                 db.set("temp", "123");
                 db.expire("temp", 1);
-                assertTrue(db.ttl("temp") <= 1);
-                Thread.sleep(1200);
+                assertEquals(1, db.ttl("temp"));
+                clock.advanceSeconds(2);
+                Thread.sleep(1000);
                 assertEquals(-2, db.ttl("temp"));
                 assertEquals(null, db.get("temp"));
                 assertEquals(false, db.stringStoreContainsKey("temp"));
@@ -228,7 +232,7 @@ public class DatabaseTest {
             void testExpireOverwritesTTL() throws InterruptedException {
                 db.set("foo", "bar");
                 db.expire("foo", 1);
-                Thread.sleep(500);
+                clock.advanceMillis(500);
                 db.expire("foo", 3);
                 assertTrue(db.ttl("foo") > 1);
             }
@@ -264,7 +268,7 @@ public class DatabaseTest {
             void testExpiredKeyNotRevived() throws InterruptedException {
                 db.set("ghost", "boo");
                 db.expire("ghost", 1);
-                Thread.sleep(1200);
+                clock.advanceSeconds(2);
                 assertEquals(null, db.get("ghost"));
                 assertEquals(null, db.get("ghost")); // repeat call doesn’t revive it
             }
@@ -275,10 +279,12 @@ public class DatabaseTest {
     @DisplayName("Hash Store")
     class HashStore {
         Database db;
+        FakeClock clock;
 
         @BeforeEach
         void beforeEach() {
-            db = new Database();
+            clock = new FakeClock(0);
+            db = new Database(clock);
         }
 
         @Nested
@@ -452,7 +458,7 @@ public class DatabaseTest {
                 db.hset("user:1", "name", "madavan");
                 db.expire("user:1", 1); // expire in 1 second
                 assertTrue(db.ttl("user:1") <= 1);
-                Thread.sleep(1200);
+                clock.advanceSeconds(2);
                 assertEquals(-2, db.ttl("user:1")); // expired
                 assertEquals(null, db.hashget("user:1", "name"));
             }
