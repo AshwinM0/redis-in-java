@@ -11,7 +11,7 @@
 
 ## 📖 Overview
 
-**Redis-In-Java** is a robust, clean-room implementation of the Redis server. It is not just a toy project; it mimics the core architecture of Redis to provide a reliable, in-memory key-value store. It supports the standard **RESP (Redis Serialization Protocol)**, making it compatible with any standard Redis client (like `redis-cli`, `jedis`, or `lettuce`).
+**Redis-In-Java** is a robust, clean-room implementation of the Redis server. It mimics the core architecture of Redis to provide a reliable, in-memory key-value store. It supports the standard **RESP (Redis Serialization Protocol)**, making it compatible with any standard Redis client (like `redis-cli`, `jedis`, or `lettuce`).
 
 This project showcases:
 *   **System Design**: Clean separation of concerns (Networking, Protocol parsing, Command execution, Storage).
