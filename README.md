@@ -3,7 +3,7 @@
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://jdk.java.net/21/)
 [![Build](https://img.shields.io/badge/Build-Maven-blue.svg)](https://maven.apache.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Protocol](https://img.shields.io/badge/Protocol-RESP-red.svg)](https://redis.io/docs/reference/protocol-spec/)
+[![Protocol](https://img.shields.io/badge/Protocol-RESP-red.svg)](https://redis.io/docs/latest/develop/reference/protocol-spec/)
 
 > A high-performance, multithreaded Redis server implementation built from scratch in Java. Designed to demonstrate advanced concurrency patterns, strict protocol compliance, and system-level architecture.
 
