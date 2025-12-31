@@ -4,8 +4,12 @@ import java.io.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import redis.config.ServerConfig;
+import redis.core.CommandProcessor;
 import redis.core.Database;
+import redis.persistence.AofManager;
 import redis.pubsub.PubSubManager;
+import redis.resp.RespWriter;
 
 import java.net.*;
 import java.util.concurrent.*;
@@ -14,25 +18,52 @@ public class RedisServer {
 
     private static final Logger LOG = Logger.getLogger(RedisServer.class.getName());
 
-    private final int port;
+    private final ServerConfig config;
     private final ExecutorService threadPool;
     private final Database db = new Database();
     private final PubSubManager pubsub = new PubSubManager();
-    private ServerSocket serverSocket;
 
+    private ServerSocket serverSocket;
     private volatile boolean running = true;
     private volatile boolean stopped = false;
 
+    private final RespWriter writer = new RespWriter();;
+    private AofManager aofManager;
+    private CommandProcessor commandProcessor;
+
     public RedisServer() {
-        this(6379);
+        this(ServerConfig.fromEnv());
     }
 
-    public RedisServer(int port) {
-        this.port = port;
-        this.threadPool = Executors.newCachedThreadPool();
+    public RedisServer(ServerConfig config) {
+        this.config = config;
+        this.threadPool = (config.maxThreads <= 0)
+                ? Executors.newCachedThreadPool()
+                : Executors.newFixedThreadPool(config.maxThreads);
     }
 
     public void start() {
+        if (config.aofEnabled) {
+            try {
+                aofManager = new AofManager(config.aofPath, writer, config.fsyncPolicy);
+            } catch (IOException e) {
+                LOG.log(Level.SEVERE, "Failed to initialize AOF manager", e);
+                return; // Cannot start server without AOF if required
+            }
+        } else {
+            LOG.info("AOF disabled");
+        }
+
+        commandProcessor = new CommandProcessor(pubsub, aofManager);
+
+        if (config.aofEnabled && aofManager != null) {
+            try {
+                aofManager.replay(db, commandProcessor, writer);
+            } catch (IOException e) {
+                LOG.log(Level.SEVERE, "Failed to replay AOF file", e);
+            }
+        }
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.err.println(">>> SHUTDOWN HOOK RUNNING <<<"); // unbuffered stderr
             System.err.flush();
@@ -42,15 +73,15 @@ public class RedisServer {
         try {
             this.serverSocket = new ServerSocket();
             serverSocket.setReuseAddress(true); // allow immediate reuse
-            serverSocket.bind(new InetSocketAddress(port));
+            serverSocket.bind(new InetSocketAddress(config.port));
 
-            LOG.info(() -> "Redis server listening on port " + port);
+            LOG.info(() -> "Redis server listening on port " + config.port);
 
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
                     LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress());
-                    threadPool.submit(new ClientHandler(clientSocket, db, pubsub));
+                    threadPool.submit(new ClientHandler(clientSocket, db, commandProcessor, pubsub));
                 } catch (SocketException e) {
                     if (running) {
                         LOG.log(Level.WARNING, "Socket error", e);

@@ -15,7 +15,8 @@ public class HDelCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!minArity(writer, out, "HDEL", args.size(), 3)) return;
+        if (!minArity(writer, out, "HDEL", args.size(), 3))
+            return;
 
         String key = args.get(1).str;
 
@@ -32,5 +33,10 @@ public class HDelCommand implements Command {
         }
 
         writer.writeInt(out, deleted);
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

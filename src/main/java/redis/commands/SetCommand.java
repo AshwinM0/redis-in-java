@@ -143,4 +143,9 @@ public class SetCommand implements Command {
 
         writer.writeSimple(out, "OK");
     }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
+    }
 }

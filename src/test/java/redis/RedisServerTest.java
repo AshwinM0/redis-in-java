@@ -31,7 +31,8 @@ public class RedisServerTest {
             port = s.getLocalPort();
         }
 
-        server = new RedisServer(port);
+        server = new RedisServer(
+                new redis.config.ServerConfig(port, false, null, redis.persistence.AofManager.FsyncPolicy.NO, 0));
         executor = Executors.newSingleThreadExecutor();
         executor.submit(() -> server.start());
 

@@ -23,4 +23,9 @@ public class FlushAllCommand implements Command {
         db.flushAll();
         writer.writeSimple(out, "OK");
     }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
+    }
 }

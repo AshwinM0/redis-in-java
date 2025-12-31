@@ -10,4 +10,11 @@ import redis.resp.Value;
 
 public interface Command {
     void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException;
+
+    /**
+     * Used by AOF to decide whether to log this command.
+     */
+    default boolean isWriteCommand() {
+        return false;
+    }
 }

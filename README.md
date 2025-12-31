@@ -1,51 +1,95 @@
-# Redis in Java
+# Redis-In-Java
 
-A lightweight, multithreaded implementation of a Redis-like server written in Java. This project implements the Redis Serialization Protocol (RESP) and supports a subset of core Redis commands, allowing interaction via standard Redis clients like `redis-cli`.
+[![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://jdk.java.net/21/)
+[![Build](https://img.shields.io/badge/Build-Maven-blue.svg)](https://maven.apache.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Protocol](https://img.shields.io/badge/Protocol-RESP-red.svg)](https://redis.io/docs/reference/protocol-spec/)
+
+> A high-performance, multithreaded Redis server implementation built from scratch in Java. Designed to demonstrate advanced concurrency patterns, strict protocol compliance, and system-level architecture.
+
+---
+
+## 📖 Overview
+
+**Redis-In-Java** is a robust, clean-room implementation of the Redis server. It is not just a toy project; it mimics the core architecture of Redis to provide a reliable, in-memory key-value store. It supports the standard **RESP (Redis Serialization Protocol)**, making it compatible with any standard Redis client (like `redis-cli`, `jedis`, or `lettuce`).
+
+This project showcases:
+*   **System Design**: Clean separation of concerns (Networking, Protocol parsing, Command execution, Storage).
+*   **Concurrency**: Efficient handling of concurrent clients using thread pools and thread-safe data structures.
+*   **Persistence**: Durability guarantees via AOF (Append Only File) logs.
+*   **Real-time Messaging**: Full Pub/Sub implementation.
+
+---
+
+## 🏗 Architecture
+
+The server follows a classic threaded-I/O architecture optimized for clarity and throughput.
+
+```mermaid
+graph TD
+    Client[Redis Clients] -->|TCP Connection| Server[Redis Server]
+    Server -->|Accept| ThreadPool[Worker Thread Pool]
+    
+    subgraph "Worker Thread Life Cycle"
+        ThreadPool -->|Read/Parse| RESP[RESP Parser]
+        RESP -->|Command Object| Processor[Command Processor]
+        
+        Processor -->|Read/Write| DB[(In-Memory DB)]
+        Processor -->|Publish| PubSub[Pub/Sub Manager]
+        Processor -->|Log Write| AOF[AOF Manager]
+    end
+
+    AOF -->|fsync| Disk[Disk Storage]
+    Disk -->|Replay| DB
+```
+
+### Key Components
+
+*   **Networking Layer**: Uses `ServerSocket` with a cached thread pool to handle thousands of concurrent connections (blocking I/O model).
+*   **Protocol Handler**: Custom, zero-dependency RESP parser/writer that handles pipelining and complex data types (Arrays, Bulk Strings, integers, Errors).
+*   **Storage Engine**: Thread-safe in-memory database utilizing `ConcurrentHashMap` with atomic operations for consistency.
+*   **AOF Persistence Engine**:
+    *   Logs write operations to an append-only file.
+    *   Supports robust crash recovery (Replay on startup).
+    *   Configurable `fsync` policies (`ALWAYS`, `EVERYSEC`, `NO`).
+
+---
 
 ## 🚀 Features
 
--   **RESP Support**: Fully compatible with the Redis Serialization Protocol.
--   **Multithreaded**: Handles multiple concurrent client connections using a thread pool.
--   **In-Memory Storage**: Data is stored efficiently in memory.
--   **Command Support**: Implements a wide range of standard Redis commands.
+### Core Capabilities
+*   **⚡ High Performance**: Low-latency command execution.
+*   **🔌 RESP Compatible**: Drop-in replacement for standard Redis servers for supported commands.
+*   **⚙️ Configurable**: Fully configurable via `.env` file or environment variables.
+
+### Persistent Storage (AOF)
+Data is durable! The server supports Append-Only File persistence.
+*   **Replay Mechanism**: Automatically restores state from disk on server startup.
+*   **Safety**: Configurable fsync strategies to balance performance and data safety.
+
+### Pub/Sub System
+Real-time messaging backend.
+*   `SUBSCRIBE` / `UNSUBSCRIBE`: Listen to channels.
+*   `PUBLISH`: Broadcast messages to active subscribers.
 
 ### Supported Commands
+| Category | Commands |
+|----------|----------|
+| **String** | `SET` (EX, NX, XX), `GET`, `MSET`, `MGET`, `INCR`, `DECR`, `APPEND`, `STRLEN` |
+| **Hash** | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS` |
+| **Keys** | `DEL`, `EXISTS`, `KEYS`, `EXPIRE`, `TTL`, `TYPE`, `FLUSHALL` |
+| **Pub/Sub** | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` |
+| **Server** | `PING`, `ECHO`, `COMMAND` |
 
-#### String Operations
--   `SET` (with options like EX, PX, NX, XX)
--   `GET`
--   `MSET`, `MGET`
--   `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`
--   `APPEND`
--   `GETRANGE`, `GETSET`
--   `STRLEN`
--   `SETNX`
+---
 
-#### Hash Operations
--   `HSET`, `HSETNX`
--   `HGET`, `HGETALL`
--   `HDEL`
--   `HEXISTS`
--   `HLEN`
+## 🛠 Getting Started
 
-#### Key Management
--   `DEL`
--   `EXISTS`
--   `KEYS`
--   `EXPIRE`, `TTL`
--   `TYPE` (returns `string`, `list`, `hash`, etc.)
--   `FLUSHALL`
+### Prerequisites
+*   Java JDK 21+
+*   Maven 3.6+
 
-#### Server & Connection
--   `PING`
--   `COMMAND`
-
-## 🛠 Prerequisites
-
--   **Java**: JDK 21 or higher.
--   **Maven**: For building the project.
-
-## 📦 Installation & Usage
+### Installation
 
 1.  **Clone the repository**
     ```bash
@@ -53,30 +97,50 @@ A lightweight, multithreaded implementation of a Redis-like server written in Ja
     cd redis-in-java
     ```
 
-2.  **Build the project**
+2.  **Build**
     ```bash
     mvn clean package
     ```
 
-3.  **Run the server**
-    You can run the generated JAR file:
+3.  **Run**
     ```bash
     java -jar target/redis-1.0-SNAPSHOT.jar
     ```
-    *The server listens on port **6379** by default.*
 
-4.  **Connect with a client**
-    Open a new terminal and use the standard redis-cli:
-    ```bash
-    redis-cli
-    ```
-    Or test a simple command:
-    ```bash
-    redis-cli PING
-    # Output: PONG
-    ```
+### Configuration (.env)
+Create a `.env` file in the root directory to customize your server:
 
-## 🏗 Project Structure
+```properties
+# Server Port
+REDIS_PORT=6379
 
--   `src/main/java/redis`: Core server logic (`RedisServer`, `ClientHandler`, `Database`, `RespParser`).
--   `src/main/java/redis/commands`: Implementation of individual Redis commands.
+# Threading (0 = cached/unlimited)
+REDIS_MAX_THREADS=0
+
+# Persistence Configuration
+REDIS_AOF_ENABLED=true
+REDIS_AOF_PATH=Persistence/appendonly.aof
+# Policies: ALWAYS (safest), EVERYSEC (balanced), NO (fastest)
+REDIS_AOF_FSYNC=EVERYSEC
+```
+
+---
+
+## 🧪 Testing
+
+The project includes a comprehensive suite of unit and integration tests.
+
+```bash
+mvn test
+```
+
+Start a client and test manually:
+```bash
+redis-cli
+127.0.0.1:6379> PING
+PONG
+127.0.0.1:6379> SET user:1 "Alice"
+OK
+127.0.0.1:6379> GET user:1
+"Alice"
+```

@@ -15,7 +15,8 @@ public class IncrByCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!arity(writer, out, "INCRBY", args.size(), 3)) return;
+        if (!arity(writer, out, "INCRBY", args.size(), 3))
+            return;
 
         String key = args.get(1).str;
         String incrementStr = args.get(2).str;
@@ -26,7 +27,8 @@ public class IncrByCommand implements Command {
         }
 
         Long increment = parseLongArg(writer, out, incrementStr);
-        if (increment == null) return;
+        if (increment == null)
+            return;
 
         String currentVal = db.get(key);
         long base;
@@ -42,5 +44,10 @@ public class IncrByCommand implements Command {
         db.set(key, Long.toString(result));
 
         writer.writeInt(out, result);
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

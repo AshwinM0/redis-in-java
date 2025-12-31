@@ -15,7 +15,8 @@ public class GetSetCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!arity(writer, out, "GETSET", args.size(), 3)) return;
+        if (!arity(writer, out, "GETSET", args.size(), 3))
+            return;
 
         String key = args.get(1).str;
         String newValue = args.get(2).str;
@@ -36,5 +37,10 @@ public class GetSetCommand implements Command {
         }
 
         writer.writeBulk(out, oldValue);
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

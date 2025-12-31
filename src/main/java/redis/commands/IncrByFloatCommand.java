@@ -15,7 +15,8 @@ public class IncrByFloatCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!arity(writer, out, "INCRBYFLOAT", args.size(), 3)) return;
+        if (!arity(writer, out, "INCRBYFLOAT", args.size(), 3))
+            return;
 
         String key = args.get(1).str;
         String incrementStr = args.get(2).str;
@@ -32,15 +33,22 @@ public class IncrByFloatCommand implements Command {
             base = 0.0;
         } else {
             base = parseDoubleArg(writer, out, oldVal);
-            if (base == null) return;
+            if (base == null)
+                return;
         }
 
         Double incVal = parseDoubleArg(writer, out, incrementStr);
-        if (incVal == null) return;
+        if (incVal == null)
+            return;
 
         Double result = base + incVal;
 
         db.set(key, Double.toString(result));
         writer.writeBulk(out, result.toString());
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

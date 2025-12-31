@@ -27,11 +27,11 @@ public class ClientHandler implements Runnable {
     private final CommandProcessor commandProcessor;
     private BufferedWriter out; // Stored as field for cleanup access
 
-    public ClientHandler(Socket client, Database sharedDB, PubSubManager pubsub) {
+    public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
         this.client = client;
         this.db = sharedDB;
         this.pubsub = pubsub;
-        this.commandProcessor = new CommandProcessor(pubsub);
+        this.commandProcessor = commandProcessor;
     }
 
     private static final Set<String> PUBSUB_ALLOWED_COMMANDS = Set.of(
@@ -67,7 +67,7 @@ public class ClientHandler implements Runnable {
                         continue;
                     }
 
-                    commandProcessor.executeCommand(command, db, writer, out, request.array);
+                    commandProcessor.executeCommand(command, db, writer, out, request.array, false);
                     out.flush();
                 } catch (RespParseException e) {
                     // Invalid RESP format - send error but keep connection open

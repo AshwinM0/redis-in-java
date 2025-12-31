@@ -15,7 +15,8 @@ public class HSetnxCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!arity(writer, out, "HSETNX", args.size(), 4)) return;
+        if (!arity(writer, out, "HSETNX", args.size(), 4))
+            return;
 
         String key = args.get(1).str;
 
@@ -29,5 +30,10 @@ public class HSetnxCommand implements Command {
 
         int result = db.hsetnx(key, field, value);
         writer.writeInt(out, result);
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

@@ -4,3 +4,5 @@ target/
 *.log
 .DS_Store
 improvements.txt
+Persistence/appendonly.aof
+.env

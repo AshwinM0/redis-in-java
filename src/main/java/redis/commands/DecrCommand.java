@@ -15,7 +15,8 @@ public class DecrCommand implements Command {
     @Override
     public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
-        if (!arity(writer, out, "DECR", args.size(), 2)) return;
+        if (!arity(writer, out, "DECR", args.size(), 2))
+            return;
 
         String key = args.get(1).str;
 
@@ -38,5 +39,10 @@ public class DecrCommand implements Command {
         db.set(key, Long.toString(num));
 
         writer.writeInt(out, num);
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }

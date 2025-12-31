@@ -36,4 +36,9 @@ public class HSetCommand implements Command {
 
         writer.writeInt(out, newFields);
     }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
+    }
 }

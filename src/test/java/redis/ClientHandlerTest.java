@@ -47,7 +47,7 @@ class ClientHandlerTest {
         executor.submit(() -> {
             try {
                 Socket client = serverSocket.accept();
-                new ClientHandler(client, db, pubsub).run();
+                new ClientHandler(client, db, new redis.core.CommandProcessor(pubsub), pubsub).run();
             } catch (IOException ignored) {
             }
         });

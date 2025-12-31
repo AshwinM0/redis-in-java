@@ -11,8 +11,7 @@ import java.util.List;
 public class MSetCommand implements Command {
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args)
-            throws IOException {
+    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
 
         if (args.size() < 3 || args.size() % 2 == 0) {
             writer.writeError(out, "wrong number of arguments for 'mset' command");
@@ -28,5 +27,10 @@ public class MSetCommand implements Command {
         }
 
         writer.writeSimple(out, "OK");
+    }
+
+    @Override
+    public boolean isWriteCommand() {
+        return true;
     }
 }
