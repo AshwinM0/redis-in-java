@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes an in-flight run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash # available on the Windows runners too, so one script fits every OS
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / JDK ${{ matrix.java }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        java: ['21', '25']
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run tests
+        run: mvn -B --no-transfer-progress clean test
+
+      - name: Package
+        run: mvn -B --no-transfer-progress package -DskipTests
+
+      # The README tells users to run `java -jar`. That only works if the
+      # manifest names a main class, which is easy to lose and silent when lost.
+      - name: Verify the jar declares a Main-Class
+        run: python .github/scripts/check_manifest.py target/redis-1.0-SNAPSHOT.jar redis.server.RedisServer
+
+      - name: Smoke test the packaged jar
+        run: python .github/scripts/smoke_test.py target/redis-1.0-SNAPSHOT.jar
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: surefire-reports-${{ matrix.os }}-jdk${{ matrix.java }}
+          path: target/surefire-reports/
+          retention-days: 7
+
+      - name: Upload jar
+        if: matrix.os == 'ubuntu-latest' && matrix.java == '21'
+        uses: actions/upload-artifact@v5
+        with:
+          name: redis-jar
+          path: target/redis-1.0-SNAPSHOT.jar
+          retention-days: 14
