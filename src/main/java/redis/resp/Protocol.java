@@ -73,6 +73,9 @@ public final class Protocol {
      */
     public static final int MAX_PREALLOCATED_ELEMENTS = 1024;
 
+    /** The RESP line terminator, as text. */
+    public static final String CRLF_TEXT = new String(new char[] { 13, 10 });
+
     public static byte[] toWire(String s) {
         return s.getBytes(WIRE);
     }

@@ -18,10 +18,14 @@ import java.io.OutputStream;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Locale;
 
 public class AofManager implements Closeable {
     public enum FsyncPolicy {
@@ -30,8 +34,8 @@ public class AofManager implements Closeable {
 
     private final Path aofPath;
     private final RespWriter writer;
-    private final BufferedOutputStream out;
-    private final FileChannel channel;
+    private BufferedOutputStream out;
+    private FileChannel channel;
     private final FsyncPolicy policy;
 
     private final ScheduledExecutorService fsyncScheduler;
@@ -75,6 +79,48 @@ public class AofManager implements Closeable {
     }
 
     /**
+     * Replaces the log with the shortest one that reproduces the current dataset.
+     *
+     * <p>The AOF is a history, so its size tracks writes performed rather than data held:
+     * ten million INCRs against one counter are ten million entries to store and to
+     * replay at startup. Compaction writes what the data <em>is</em> instead of how it got
+     * that way.
+     *
+     * <p>The new log is built in a sibling file, forced to disk, and then moved over the
+     * old one under ATOMIC_MOVE, so a crash at any point leaves either the complete old
+     * log or the complete new one -- never a half-written file that replay would truncate
+     * at. Appends are blocked throughout, so nothing can be written to the log being
+     * replaced.
+     */
+    public synchronized void rewrite(Database db) throws IOException {
+        List<List<String>> commands = db.dumpAsCommands();
+
+        Path temp = aofPath.resolveSibling(aofPath.getFileName() + ".rewrite");
+        try (FileOutputStream tempFile = new FileOutputStream(temp.toFile(), false)) {
+            BufferedOutputStream buffered = new BufferedOutputStream(tempFile, 64 * 1024);
+            for (List<String> command : commands) {
+                List<Value> args = new ArrayList<>(command.size());
+                for (String arg : command) {
+                    args.add(new Value("bulk", arg));
+                }
+                writer.writeRequest(buffered, new Value("array", args));
+            }
+            buffered.flush();
+            tempFile.getChannel().force(false); // durable before it becomes the real log
+        }
+
+        out.flush();
+        out.close(); // releases the old file and its channel
+
+        Files.move(temp, aofPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+
+        FileOutputStream reopened = new FileOutputStream(aofPath.toFile(), true);
+        this.channel = reopened.getChannel();
+        this.out = new BufferedOutputStream(reopened, 64 * 1024);
+        dirty.set(false);
+    }
+
+    /**
      * Replay AOF file at startup (no re-append).
      */
     public void replay(Database db, CommandProcessor processor, RespWriter respWriter) throws IOException {
@@ -113,7 +159,7 @@ public class AofManager implements Closeable {
                     continue;
                 }
 
-                String cmdName = req.array.get(0).str.toUpperCase();
+                String cmdName = req.array.get(0).str.toUpperCase(Locale.ROOT);
 
                 try {
                     // fromReplay=true => do not append again

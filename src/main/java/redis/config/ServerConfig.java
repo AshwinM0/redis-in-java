@@ -13,17 +13,44 @@ public class ServerConfig {
         public final FsyncPolicy fsyncPolicy;
         public final int maxThreads;
 
+        /**
+         * Close a client that has sent nothing for this many seconds. 0 disables it,
+         * which is Redis's default. Subscribers are exempt: sitting silent waiting for
+         * messages is the whole point of being subscribed.
+         */
+        public final int timeoutSeconds;
+
+        /**
+         * Refuse connections past this many concurrent clients. Each client holds a
+         * thread for as long as it stays connected, so without a ceiling a connection
+         * flood becomes an out-of-memory.
+         */
+        public final int maxClients;
+
         public ServerConfig(
                         int port,
                         boolean aofEnabled,
                         Path aofPath,
                         FsyncPolicy fsyncPolicy,
                         int maxThreads) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, 0, 10_000);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients) {
                 this.port = port;
                 this.aofEnabled = aofEnabled;
                 this.aofPath = aofPath;
                 this.fsyncPolicy = fsyncPolicy;
                 this.maxThreads = maxThreads;
+                this.timeoutSeconds = timeoutSeconds;
+                this.maxClients = maxClients;
         }
 
         public static ServerConfig fromEnv() {
@@ -42,12 +69,20 @@ public class ServerConfig {
                 int maxThreads = Integer.parseInt(
                                 env("REDIS_MAX_THREADS", "0"));
 
+                int timeoutSeconds = Integer.parseInt(
+                                env("REDIS_TIMEOUT", "0"));
+
+                int maxClients = Integer.parseInt(
+                                env("REDIS_MAX_CLIENTS", "10000"));
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
                                 aofPath,
                                 fsyncPolicy,
-                                maxThreads);
+                                maxThreads,
+                                timeoutSeconds,
+                                maxClients);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

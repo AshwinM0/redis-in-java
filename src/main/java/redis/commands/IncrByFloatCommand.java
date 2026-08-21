@@ -22,12 +22,8 @@ public class IncrByFloatCommand implements Command {
         String key = args.get(1).str;
         String incrementStr = args.get(2).str;
 
-        Double incVal = parseDoubleArg(writer, out, incrementStr);
-        if (incVal == null)
-            return;
-
         try {
-            writer.writeBulk(out, Double.toString(db.incrByFloat(key, incVal)));
+            writer.writeBulk(out, db.incrByFloat(key, incrementStr));
         } catch (CommandException e) {
             writer.writeError(out, e.getMessage());
         }
