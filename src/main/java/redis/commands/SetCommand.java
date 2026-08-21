@@ -20,9 +20,6 @@ public class SetCommand implements Command {
         }
 
         String key = args.get(1).str;
-        if (db.containsHashKey(key)) {
-            db.deleteHashKey(key);
-        }
         String value = args.get(2).str;
         boolean keepTTL = false;
         boolean nx = false, xx = false;
@@ -113,32 +110,9 @@ public class SetCommand implements Command {
             return;
         }
 
-        if (nx && db.get(key) != null) {
-            writer.writeBulk(out, null);
+        if (!db.set(key, value, nx, xx, keepTTL, expireSeconds)) {
+            writer.writeBulk(out, null); // NX on an existing key, or XX on a missing one
             return;
-        }
-        if (xx && db.get(key) == null) {
-            writer.writeBulk(out, null);
-            return;
-        }
-
-        if (keepTTL) {
-            Long expiry = db.getExpiry(key);
-            db.set(key, value);
-            if (expiry != null)
-                db.setExpiry(key, expiry);
-        } else {
-            db.setAndRemoveOlder(key, value);
-        }
-
-        if (expireSeconds != null && expireSeconds <= 0) {
-            db.del(key);
-            writer.writeSimple(out, "OK");
-            return;
-        }
-
-        if (expireSeconds != null) {
-            db.expire(key, expireSeconds);
         }
 
         writer.writeSimple(out, "OK");

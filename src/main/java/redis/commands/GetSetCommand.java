@@ -1,5 +1,6 @@
 package redis.commands;
 
+import redis.core.CommandException;
 import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
@@ -21,22 +22,11 @@ public class GetSetCommand implements Command {
         String key = args.get(1).str;
         String newValue = args.get(2).str;
 
-        if (db.containsHashKey(key)) {
-            writer.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
-            return;
+        try {
+            writer.writeBulk(out, db.getSet(key, newValue));
+        } catch (CommandException e) {
+            writer.writeError(out, e.getMessage());
         }
-
-        String oldValue = db.get(key);
-
-        Long oldTTL = db.getExpiry(key);
-
-        db.set(key, newValue);
-
-        if (oldTTL != null) {
-            db.setExpiry(key, oldTTL);
-        }
-
-        writer.writeBulk(out, oldValue);
     }
 
     @Override

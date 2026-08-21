@@ -1,5 +1,6 @@
 package redis.commands;
 
+import redis.core.CommandException;
 import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
@@ -21,30 +22,15 @@ public class IncrByFloatCommand implements Command {
         String key = args.get(1).str;
         String incrementStr = args.get(2).str;
 
-        if (db.containsHashKey(key)) {
-            writer.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
-            return;
-        }
-
-        String oldVal = db.get(key);
-        Double base;
-
-        if (oldVal == null) {
-            base = 0.0;
-        } else {
-            base = parseDoubleArg(writer, out, oldVal);
-            if (base == null)
-                return;
-        }
-
         Double incVal = parseDoubleArg(writer, out, incrementStr);
         if (incVal == null)
             return;
 
-        Double result = base + incVal;
-
-        db.set(key, Double.toString(result));
-        writer.writeBulk(out, result.toString());
+        try {
+            writer.writeBulk(out, Double.toString(db.incrByFloat(key, incVal)));
+        } catch (CommandException e) {
+            writer.writeError(out, e.getMessage());
+        }
     }
 
     @Override
