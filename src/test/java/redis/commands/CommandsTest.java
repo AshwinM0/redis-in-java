@@ -280,7 +280,8 @@ public class CommandsTest {
         @Test
         void testPing() throws IOException {
             assertEquals("+PONG\r\n", execute(new PingCommand(), "PING"));
-            assertEquals("+HELLO\r\n", execute(new PingCommand(), "PING", "HELLO"));
+            // The argument form replies with a bulk string, matching Redis.
+            assertEquals("$5\r\nHELLO\r\n", execute(new PingCommand(), "PING", "HELLO"));
         }
 
         @Test

@@ -80,7 +80,10 @@ class ClientHandlerTest {
             out.write(resp("PING", "hello"));
             out.flush();
 
-            assertEquals("+hello", in.readLine());
+            // A bulk string, as Redis replies: the byte count means an argument
+            // containing CRLF is data rather than the end of the frame.
+            assertEquals("$5", in.readLine());
+            assertEquals("hello", in.readLine());
         }
     }
 

@@ -16,8 +16,11 @@ public class PingCommand implements Command {
             return;
         }
 
+        // The argument form replies with a bulk string, as Redis does. A bulk string
+        // carries a byte count, so an argument containing CRLF is returned as the data it
+        // is instead of ending the reply early. Bare PING keeps its simple-string +PONG.
         if (args.size() == 2)
-            writer.writeSimple(out, args.get(1).str);
+            writer.writeBulk(out, args.get(1).str);
         else
             writer.writeSimple(out, "PONG");
     }
