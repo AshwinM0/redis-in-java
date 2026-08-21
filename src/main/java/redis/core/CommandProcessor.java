@@ -117,6 +117,12 @@ public class CommandProcessor {
         // Add others...
     }
 
+    /** @see redis.commands.Command#writesToOtherConnections() */
+    public boolean writesToOtherConnections(String name) {
+        Command cmd = commands.get(name);
+        return cmd != null && cmd.writesToOtherConnections();
+    }
+
     public void executeCommand(
             String name,
             Database db,

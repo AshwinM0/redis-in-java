@@ -48,6 +48,17 @@ public class ClientHandler implements Runnable {
         return PUBSUB_ALLOWED_COMMANDS.contains(command);
     }
 
+    /**
+     * Writes an error reply under this connection's write lock, so it cannot land in the
+     * middle of a message being delivered to the same socket by a publishing thread.
+     */
+    private void writeGuarded(String error) throws IOException {
+        synchronized (pubsub.lockFor(out)) {
+            writer.writeError(out, error);
+            out.flush();
+        }
+    }
+
     @Override
     public void run() {
         try (InputStream in = new BufferedInputStream(client.getInputStream(), BUFFER_SIZE)) {
@@ -63,8 +74,7 @@ public class ClientHandler implements Runnable {
 
                     // Ensure it's an array type (commands are always arrays)
                     if (!"array".equals(request.typ) || request.array.isEmpty()) {
-                        writer.writeError(out, "invalid request");
-                        out.flush();
+                        writeGuarded("invalid request");
                         continue;
                     }
 
@@ -74,8 +84,17 @@ public class ClientHandler implements Runnable {
                         continue;
                     }
 
-                    commandProcessor.executeCommand(command, db, writer, out, request.array, false);
-                    out.flush();
+                    // A subscribed connection has a second writer: any thread delivering
+                    // a published message. Both go through the connection's lock, so a
+                    // reply and a message can never interleave inside one frame.
+                    if (commandProcessor.writesToOtherConnections(command)) {
+                        commandProcessor.executeCommand(command, db, writer, out, request.array, false);
+                    } else {
+                        synchronized (pubsub.lockFor(out)) {
+                            commandProcessor.executeCommand(command, db, writer, out, request.array, false);
+                            out.flush();
+                        }
+                    }
 
                     if ("QUIT".equals(command)) {
                         LOG.info(() -> "Client sent QUIT: " + client.getRemoteSocketAddress());
@@ -84,8 +103,7 @@ public class ClientHandler implements Runnable {
                 } catch (RespParseException e) {
                     // Invalid RESP format - the stream is no longer trustworthy, so
                     // report and close rather than trying to resync mid-message.
-                    writer.writeError(out, "Protocol error: " + e.getMessage());
-                    out.flush();
+                    writeGuarded("Protocol error: " + e.getMessage());
                     break;
                 } catch (EOFException | SocketException e) {
                     // Abrupt or normal client disconnect
@@ -101,8 +119,7 @@ public class ClientHandler implements Runnable {
                     // Command bug or unexpected server error
                     LOG.log(Level.SEVERE, "Internal error: " + e.getMessage());
                     try {
-                        writer.writeError(out, "internal server error");
-                        out.flush();
+                        writeGuarded("internal server error");
                     } catch (IOException ignored) {
                         break; // client probably gone
                     }
