@@ -26,6 +26,8 @@ public class RedisServer {
     private ServerSocket serverSocket;
     private volatile boolean running = true;
     private volatile boolean stopped = false;
+    private final java.util.concurrent.atomic.AtomicInteger connectedClients =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private final RespWriter writer = new RespWriter();;
     private AofManager aofManager;
@@ -80,10 +82,15 @@ public class RedisServer {
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
+                    if (!admit(clientSocket)) {
+                        continue;
+                    }
+
                     LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress());
                     // execute, not submit: submit parks anything the handler throws in a
                     // Future nobody reads, so a thread dying on an Error leaves no trace.
-                    threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub));
+                    threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub,
+                            config.timeoutSeconds, connectedClients::decrementAndGet));
                 } catch (SocketException e) {
                     if (running) {
                         LOG.log(Level.WARNING, "Socket error", e);
@@ -97,6 +104,35 @@ public class RedisServer {
         } finally {
             stop();
         }
+    }
+
+    /**
+     * Takes a connection slot, or turns the client away.
+     *
+     * <p>Each client occupies a thread for as long as it stays connected, so the count of
+     * live connections is the real resource. Refusing past the ceiling costs one error
+     * reply; accepting without one trades an unbounded number of threads for an
+     * out-of-memory that takes the whole server with it.
+     */
+    private boolean admit(Socket clientSocket) {
+        if (connectedClients.incrementAndGet() <= config.maxClients) {
+            return true;
+        }
+        connectedClients.decrementAndGet();
+        LOG.warning(() -> "Refusing client, at limit of " + config.maxClients + ": "
+                + clientSocket.getRemoteSocketAddress());
+        try (Socket refused = clientSocket) {
+            writer.writeError(refused.getOutputStream(), "max number of clients reached");
+            refused.getOutputStream().flush();
+        } catch (IOException ignored) {
+            // The client is being dropped either way.
+        }
+        return false;
+    }
+
+    /** Live connections, for tests and for the admission check. */
+    public int connectedClients() {
+        return connectedClients.get();
     }
 
     public void stop() {

@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 
 import redis.resp.RespParser;
 import redis.core.CommandProcessor;
@@ -17,6 +18,7 @@ import redis.resp.RespParseException;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -32,17 +34,27 @@ public class ClientHandler implements Runnable {
     private final PubSubManager pubsub;
     private final RespWriter writer = new RespWriter();
     private final CommandProcessor commandProcessor;
+    private final int idleTimeoutSeconds;
+    private final Runnable onClose;
     private OutputStream out; // Stored as field for cleanup access
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
+        this(client, sharedDB, commandProcessor, pubsub, 0, () -> {
+        });
+    }
+
+    public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
+            int idleTimeoutSeconds, Runnable onClose) {
         this.client = client;
         this.db = sharedDB;
         this.pubsub = pubsub;
         this.commandProcessor = commandProcessor;
+        this.idleTimeoutSeconds = idleTimeoutSeconds;
+        this.onClose = onClose;
     }
 
     private static final Set<String> PUBSUB_ALLOWED_COMMANDS = Set.of(
-            "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT");
+            "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET");
 
     private boolean isPubSubAllowedCommand(String command) {
         return PUBSUB_ALLOWED_COMMANDS.contains(command);
@@ -62,6 +74,9 @@ public class ClientHandler implements Runnable {
     @Override
     public void run() {
         try (InputStream in = new BufferedInputStream(client.getInputStream(), BUFFER_SIZE)) {
+            if (idleTimeoutSeconds > 0) {
+                client.setSoTimeout(idleTimeoutSeconds * 1000);
+            }
             out = new BufferedOutputStream(client.getOutputStream(), BUFFER_SIZE);
             while (true) {
                 try {
@@ -81,6 +96,11 @@ public class ClientHandler implements Runnable {
                     String command = request.array.get(0).str.toUpperCase();
 
                     if (pubsub.isSubscribed(out) && !isPubSubAllowedCommand(command)) {
+                        // Dropping this silently leaves the client blocked on a read that
+                        // will never be answered. Every request gets a reply.
+                        writeGuarded("Can't execute '" + command.toLowerCase(Locale.ROOT)
+                                + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET"
+                                + " are allowed in this context");
                         continue;
                     }
 
@@ -105,6 +125,15 @@ public class ClientHandler implements Runnable {
                     // report and close rather than trying to resync mid-message.
                     writeGuarded("Protocol error: " + e.getMessage());
                     break;
+                } catch (SocketTimeoutException e) {
+                    // A subscriber is supposed to sit silent waiting for messages, so the
+                    // idle timeout does not apply to one. Redis exempts them the same way.
+                    if (pubsub.isSubscribed(out)) {
+                        continue;
+                    }
+                    LOG.info(() -> "Closing idle client: " + client.getRemoteSocketAddress());
+                    break;
+
                 } catch (EOFException | SocketException e) {
                     // Abrupt or normal client disconnect
                     LOG.info(() -> "Client disconnected: " + client.getRemoteSocketAddress());
@@ -128,6 +157,7 @@ public class ClientHandler implements Runnable {
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to initialize client handler for " + client.getRemoteSocketAddress(), e);
         } finally {
+            onClose.run();
             if (out != null) {
                 pubsub.unsubscribeAll(out); // Clean up subscriptions
                 try {
