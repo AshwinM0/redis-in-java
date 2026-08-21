@@ -24,6 +24,14 @@ public class RespParser {
      * @throws RespParseException if the bytes are not valid RESP
      */
     public static Value readValue(InputStream in) throws IOException, RespParseException {
+        return readValue(in, 0);
+    }
+
+    private static Value readValue(InputStream in, int depth) throws IOException, RespParseException {
+        if (depth > Protocol.MAX_NESTING_DEPTH) {
+            throw new RespParseException("nesting depth exceeds " + Protocol.MAX_NESTING_DEPTH);
+        }
+
         int prefix = in.read();
         if (prefix == -1) {
             return null; // clean EOF between messages: the client hung up
@@ -38,9 +46,12 @@ public class RespParser {
                 if (count < 0 || count > Protocol.MAX_ARRAY_ELEMENTS) {
                     throw new RespParseException("invalid multibulk length: " + count);
                 }
-                List<Value> elements = new ArrayList<>((int) count);
+                // Reserve only a bounded amount. The count is a claim the client has not
+                // backed with any data yet; the list grows as elements actually arrive.
+                List<Value> elements = new ArrayList<>(
+                        (int) Math.min(count, Protocol.MAX_PREALLOCATED_ELEMENTS));
                 for (int i = 0; i < count; i++) {
-                    Value element = readValue(in);
+                    Value element = readValue(in, depth + 1);
                     if (element == null) {
                         throw new EOFException("unexpected EOF inside array");
                     }
@@ -81,11 +92,20 @@ public class RespParser {
         }
     }
 
-    /** Reads bytes up to the next LF and returns them without the trailing CRLF. */
-    private static String readLine(InputStream in) throws IOException {
+    /**
+     * Reads bytes up to the next LF and returns them without the trailing CRLF.
+     *
+     * <p>Gives up past {@link Protocol#MAX_LINE_LENGTH}. A client that opens a header and
+     * never terminates it is otherwise an open-ended request for server memory.
+     */
+    private static String readLine(InputStream in) throws IOException, RespParseException {
         ByteArrayOutputStream buf = new ByteArrayOutputStream(32);
         int b;
         while ((b = in.read()) != -1) {
+            if (buf.size() >= Protocol.MAX_LINE_LENGTH) {
+                throw new RespParseException(
+                        "line exceeds " + Protocol.MAX_LINE_LENGTH + " bytes without a terminator");
+            }
             if (b == '\n') {
                 byte[] line = buf.toByteArray();
                 int length = (line.length > 0 && line[line.length - 1] == '\r')

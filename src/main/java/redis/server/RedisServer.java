@@ -81,7 +81,9 @@ public class RedisServer {
                 try {
                     Socket clientSocket = serverSocket.accept();
                     LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress());
-                    threadPool.submit(new ClientHandler(clientSocket, db, commandProcessor, pubsub));
+                    // execute, not submit: submit parks anything the handler throws in a
+                    // Future nobody reads, so a thread dying on an Error leaves no trace.
+                    threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub));
                 } catch (SocketException e) {
                     if (running) {
                         LOG.log(Level.WARNING, "Socket error", e);
