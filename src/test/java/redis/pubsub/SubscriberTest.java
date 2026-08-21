@@ -1,9 +1,9 @@
 package redis.pubsub;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.BufferedWriter;
-import java.io.StringWriter;
 
 import org.junit.jupiter.api.*;
 
@@ -14,10 +14,10 @@ public class SubscriberTest {
     class Constructor {
 
         @Test
-        @DisplayName("should create subscriber with given BufferedWriter")
+        @DisplayName("should create subscriber with given OutputStream")
         void testConstructor() {
-            StringWriter sw = new StringWriter();
-            BufferedWriter bw = new BufferedWriter(sw);
+            ByteArrayOutputStream sw = new ByteArrayOutputStream();
+            OutputStream bw = sw;
             Subscriber sub = new Subscriber(bw);
 
             assertNotNull(sub.out);
@@ -28,8 +28,8 @@ public class SubscriberTest {
         @Test
         @DisplayName("should create unique lock object")
         void testUniqueLock() {
-            StringWriter sw = new StringWriter();
-            BufferedWriter bw = new BufferedWriter(sw);
+            ByteArrayOutputStream sw = new ByteArrayOutputStream();
+            OutputStream bw = sw;
             Subscriber sub = new Subscriber(bw);
 
             assertNotNull(sub.lock);
@@ -44,18 +44,18 @@ public class SubscriberTest {
         @Test
         @DisplayName("should return true for same instance")
         void testEqualsSameInstance() {
-            StringWriter sw = new StringWriter();
-            BufferedWriter bw = new BufferedWriter(sw);
+            ByteArrayOutputStream sw = new ByteArrayOutputStream();
+            OutputStream bw = sw;
             Subscriber sub = new Subscriber(bw);
 
             assertTrue(sub.equals(sub));
         }
 
         @Test
-        @DisplayName("should return true for subscribers with same BufferedWriter")
+        @DisplayName("should return true for subscribers with same OutputStream")
         void testEqualsSameWriter() {
-            StringWriter sw = new StringWriter();
-            BufferedWriter bw = new BufferedWriter(sw);
+            ByteArrayOutputStream sw = new ByteArrayOutputStream();
+            OutputStream bw = sw;
             Subscriber sub1 = new Subscriber(bw);
             Subscriber sub2 = new Subscriber(bw);
 
@@ -64,10 +64,10 @@ public class SubscriberTest {
         }
 
         @Test
-        @DisplayName("should return false for subscribers with different BufferedWriters")
+        @DisplayName("should return false for subscribers with different OutputStreams")
         void testEqualsDifferentWriters() {
-            BufferedWriter bw1 = new BufferedWriter(new StringWriter());
-            BufferedWriter bw2 = new BufferedWriter(new StringWriter());
+            OutputStream bw1 = new ByteArrayOutputStream();
+            OutputStream bw2 = new ByteArrayOutputStream();
             Subscriber sub1 = new Subscriber(bw1);
             Subscriber sub2 = new Subscriber(bw2);
 
@@ -77,7 +77,7 @@ public class SubscriberTest {
         @Test
         @DisplayName("should return false for null")
         void testEqualsNull() {
-            BufferedWriter bw = new BufferedWriter(new StringWriter());
+            OutputStream bw = new ByteArrayOutputStream();
             Subscriber sub = new Subscriber(bw);
 
             assertFalse(sub.equals(null));
@@ -91,8 +91,8 @@ public class SubscriberTest {
         @Test
         @DisplayName("should return same hashCode for equal subscribers")
         void testHashCodeConsistency() {
-            StringWriter sw = new StringWriter();
-            BufferedWriter bw = new BufferedWriter(sw);
+            ByteArrayOutputStream sw = new ByteArrayOutputStream();
+            OutputStream bw = sw;
             Subscriber sub1 = new Subscriber(bw);
             Subscriber sub2 = new Subscriber(bw);
 
@@ -102,7 +102,7 @@ public class SubscriberTest {
         @Test
         @DisplayName("should return same hashCode on multiple calls")
         void testHashCodeStable() {
-            BufferedWriter bw = new BufferedWriter(new StringWriter());
+            OutputStream bw = new ByteArrayOutputStream();
             Subscriber sub = new Subscriber(bw);
 
             int hash1 = sub.hashCode();
@@ -112,9 +112,9 @@ public class SubscriberTest {
         }
 
         @Test
-        @DisplayName("hashCode should be based on BufferedWriter")
+        @DisplayName("hashCode should be based on OutputStream")
         void testHashCodeBasedOnWriter() {
-            BufferedWriter bw = new BufferedWriter(new StringWriter());
+            OutputStream bw = new ByteArrayOutputStream();
             Subscriber sub = new Subscriber(bw);
 
             assertEquals(bw.hashCode(), sub.hashCode());

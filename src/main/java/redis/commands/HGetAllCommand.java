@@ -6,15 +6,15 @@ import redis.resp.Value;
 
 import static redis.utils.CommandUtils.arity;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
 
 public class HGetAllCommand implements Command {
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
+    public void execute(Database db, RespWriter writer, OutputStream out, List<Value> args) throws IOException {
 
         if (!arity(writer, out, "HGETALL", args.size(), 2)) return;
 

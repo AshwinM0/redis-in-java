@@ -1,6 +1,6 @@
 package redis.pubsub;
 
-import java.io.BufferedWriter;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,7 +15,7 @@ public class PubSubManager {
     private final Map<String, Set<Subscriber>> channelSubscribers = new ConcurrentHashMap<>();
 
     // Track which channels each client is subscribed to
-    private final Map<BufferedWriter, Set<String>> clientChannels = new ConcurrentHashMap<>();
+    private final Map<OutputStream, Set<String>> clientChannels = new ConcurrentHashMap<>();
 
     private final RespWriter writer = new RespWriter();
 
@@ -23,7 +23,7 @@ public class PubSubManager {
      * Subscribe a client to a channel.
      * Returns the total number of channels this client is subscribed to.
      */
-    public Integer subscribe(BufferedWriter out, String channel) {
+    public Integer subscribe(OutputStream out, String channel) {
         Subscriber subscriber = new Subscriber(out);
 
         channelSubscribers.computeIfAbsent(channel, k -> ConcurrentHashMap.newKeySet()).add(subscriber);
@@ -35,7 +35,7 @@ public class PubSubManager {
     /**
      * Check if a client is currently subscribed to any channels.
      */
-    public boolean isSubscribed(BufferedWriter out) {
+    public boolean isSubscribed(OutputStream out) {
         Set<String> channels = clientChannels.get(out);
         return channels != null && !channels.isEmpty();
     }
@@ -44,7 +44,7 @@ public class PubSubManager {
      * Unsubscribe a client from a channel.
      * Returns the remaining number of channels this client is subscribed to.
      */
-    public Integer unsubscribe(BufferedWriter out, String channel) {
+    public Integer unsubscribe(OutputStream out, String channel) {
         Subscriber subscriber = new Subscriber(out);
 
         // Remove from channel's subscriber set
@@ -72,7 +72,7 @@ public class PubSubManager {
     /**
      * Unsubscribe a client from ALL channels.
      */
-    public void unsubscribeAll(BufferedWriter out) {
+    public void unsubscribeAll(OutputStream out) {
         Set<String> channels = clientChannels.remove(out);
         if (channels != null) {
             Subscriber subscriber = new Subscriber(out);

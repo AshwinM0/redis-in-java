@@ -3,10 +3,9 @@ package redis.commands;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,14 +23,14 @@ public class CommandsTest {
     private Database db;
     private RespWriter writer;
     private ByteArrayOutputStream outputStream;
-    private BufferedWriter out;
+    private OutputStream out;
 
     @BeforeEach
     void setUp() {
         db = new Database();
         writer = new RespWriter();
         outputStream = new ByteArrayOutputStream();
-        out = new BufferedWriter(new OutputStreamWriter(outputStream));
+        out = outputStream;
     }
 
     private String execute(Command cmd, String... args) throws IOException {
@@ -43,7 +42,7 @@ public class CommandsTest {
 
         cmd.execute(db, writer, out, valueArgs);
         out.flush();
-        return outputStream.toString();
+        return outputStream.toString(redis.resp.Protocol.WIRE);
     }
 
     @Nested

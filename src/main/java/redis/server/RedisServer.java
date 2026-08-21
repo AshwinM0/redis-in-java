@@ -125,6 +125,18 @@ public class RedisServer {
             Thread.currentThread().interrupt();
         }
 
+        // Close the AOF only after the client threads are done writing to it. close()
+        // fsyncs, so a clean shutdown is durable even under FsyncPolicy.NO.
+        if (aofManager != null) {
+            try {
+                aofManager.close();
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "Error closing AOF", e);
+            }
+        }
+
+        db.shutdown();
+
         System.err.println("Redis server stopped.");
     }
 

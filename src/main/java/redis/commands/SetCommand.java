@@ -6,14 +6,14 @@ import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.List;
 
 public class SetCommand implements Command {
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
+    public void execute(Database db, RespWriter writer, OutputStream out, List<Value> args) throws IOException {
 
         if (!minArity(writer, out, "SET", args.size(), 3)) {
             return;

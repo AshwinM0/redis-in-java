@@ -1,7 +1,7 @@
 package redis.commands;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.List;
 
 import static redis.utils.CommandUtils.*;
@@ -20,7 +20,7 @@ public class SubscribeCommand implements Command {
     }
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
+    public void execute(Database db, RespWriter writer, OutputStream out, List<Value> args) throws IOException {
         if (!minArity(writer, out, "SUBSCRIBE", args.size(), 2))
             return;
 

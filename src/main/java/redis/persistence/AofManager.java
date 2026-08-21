@@ -7,9 +7,20 @@ import redis.resp.RespParser;
 import redis.resp.RespWriter;
 import redis.resp.RespParseException;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.concurrent.*;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.Closeable;
+import java.io.EOFException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AofManager implements Closeable {
@@ -20,6 +31,7 @@ public class AofManager implements Closeable {
     private final Path aofPath;
     private final RespWriter writer;
     private final BufferedOutputStream out;
+    private final FileChannel channel;
     private final FsyncPolicy policy;
 
     private final ScheduledExecutorService fsyncScheduler;
@@ -31,7 +43,11 @@ public class AofManager implements Closeable {
         this.policy = policy;
 
         Files.createDirectories(aofPath.getParent() == null ? Path.of(".") : aofPath.getParent());
-        OutputStream fos = Files.newOutputStream(aofPath, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+
+        // FileOutputStream exposes the FileChannel, which is what fsync() needs to push
+        // bytes past the OS page cache onto the disk.
+        FileOutputStream fos = new FileOutputStream(aofPath.toFile(), true);
+        this.channel = fos.getChannel();
         this.out = new BufferedOutputStream(fos, 64 * 1024);
 
         if (policy == FsyncPolicy.EVERYSEC) {
@@ -50,11 +66,11 @@ public class AofManager implements Closeable {
         // write request array as RESP to AOF
         Value requestArray = (Value) requestArrayObj;
         writer.writeRequest(out, requestArray);
-        out.flush();
+        out.flush(); // hand the bytes to the OS
         dirty.set(true);
 
         if (policy == FsyncPolicy.ALWAYS) {
-            fsync();
+            fsync(); // ...and, under ALWAYS, all the way to the platter
         }
     }
 
@@ -71,15 +87,17 @@ public class AofManager implements Closeable {
         int commandsReplayed = 0;
         int commandsSkipped = 0;
 
-        try (BufferedReader in = Files.newBufferedReader(aofPath);
-                BufferedWriter nullOut = new BufferedWriter(new OutputStreamWriter(OutputStream.nullOutputStream()))) {
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(aofPath), 64 * 1024);
+                OutputStream nullOut = OutputStream.nullOutputStream()) {
 
             while (true) {
                 Value req;
                 try {
                     req = RespParser.readValue(in);
                 } catch (EOFException e) {
-                    // Normal end of file
+                    // Truncated tail: the process died mid-append. Everything before this
+                    // point is intact, so keep what we have.
+                    System.err.println("[AOF] Truncated final entry, stopping replay: " + e.getMessage());
                     break;
                 } catch (RespParseException e) {
                     System.err.println("[AOF] Corrupted entry detected, stopping replay: " + e.getMessage());
@@ -118,20 +136,25 @@ public class AofManager implements Closeable {
             return;
         try {
             fsync();
-        } catch (IOException ignored) {
-            System.err.println("[AOF] Failed to fsync AOF file: " + ignored.getMessage());
+        } catch (IOException e) {
+            // Put the flag back so the next tick retries rather than silently losing it.
+            dirty.set(true);
+            System.err.println("[AOF] Failed to fsync AOF file: " + e.getMessage());
         }
     }
 
+    /**
+     * Flush the application buffer to the OS, then force the OS to write its page cache
+     * through to the storage device. Only after {@link FileChannel#force} returns is the
+     * data guaranteed to survive a power loss.
+     *
+     * <p>{@code force(false)} is the equivalent of {@code fdatasync(2)}: it syncs file
+     * contents and the size metadata needed to read them back, but skips unrelated
+     * metadata such as mtime. This is what Redis itself uses for the AOF.
+     */
     private synchronized void fsync() throws IOException {
-        // Force OS flush to disk
-        if (out instanceof FilterOutputStream) {
-            out.flush();
-        }
-        // fsync needs underlying FileChannel; easiest: open a FileOutputStream instead
-        // of NIO stream.
-        // Option A: use FileOutputStream and call getFD().sync()
-        // Option B: keep a FileChannel ref and force(true)
+        out.flush();
+        channel.force(false);
     }
 
     @Override
@@ -140,9 +163,11 @@ public class AofManager implements Closeable {
             fsyncScheduler.shutdownNow();
         }
         synchronized (this) {
-            out.flush();
-            // fsync on close
-            out.close();
+            try {
+                fsync(); // durable before we let go of the handle
+            } finally {
+                out.close(); // closes the underlying FileOutputStream and its channel
+            }
         }
     }
 }
