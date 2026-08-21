@@ -3,6 +3,7 @@ package redis.core;
 import java.util.*;
 
 import redis.commands.AppendCommand;
+import redis.commands.BgRewriteAofCommand;
 import redis.commands.Command;
 import redis.commands.CommandCommand;
 import redis.commands.DecrByCommand;
@@ -49,6 +50,53 @@ import redis.resp.Value;
 import java.io.*;
 
 public class CommandProcessor {
+
+    /**
+     * Passes bytes straight through while noting whether the reply began with {@code '-'}.
+     *
+     * <p>A command that answers with an error changed nothing, so logging it puts a line
+     * in the AOF that replay can only reject a second time. Commands report failure by
+     * writing an error reply and nothing else, so the reply is the signal -- which avoids
+     * threading a success flag back through all thirty-odd implementations.
+     */
+    private static final class ErrorSniffingStream extends OutputStream {
+
+        private final OutputStream delegate;
+        private Boolean firstByteWasError;
+
+        ErrorSniffingStream(OutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        boolean repliedWithError() {
+            return Boolean.TRUE.equals(firstByteWasError);
+        }
+
+        private void note(int firstByte) {
+            if (firstByteWasError == null) {
+                firstByteWasError = firstByte == '-';
+            }
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            note(b);
+            delegate.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (len > 0) {
+                note(b[off]);
+            }
+            delegate.write(b, off, len);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+    }
 
     private final Map<String, Command> commands = new HashMap<>();
     private final PubSubManager pubsub;
@@ -108,6 +156,7 @@ public class CommandProcessor {
         commands.put("FLUSHALL", new FlushAllCommand());
         commands.put("TYPE", new TypeCommand());
         commands.put("COMMAND", new CommandCommand());
+        commands.put("BGREWRITEAOF", new BgRewriteAofCommand(aof));
         commands.put("ECHO", new EchoCommand());
         commands.put("QUIT", new QuitCommand());
 
@@ -151,13 +200,15 @@ public class CommandProcessor {
         // same monitor across both makes the pair atomic against any concurrent command;
         // without it a write landing in between would be logged in this one's place.
         List<Value> durable;
+        ErrorSniffingStream sniffer = new ErrorSniffingStream(out);
         synchronized (db) {
-            cmd.execute(db, writer, out, args);
-            durable = cmd.aofForm(db, args);
+            cmd.execute(db, writer, sniffer, args);
+            durable = sniffer.repliedWithError() ? null : cmd.aofForm(db, args);
         }
 
-        // A null form means the command changed nothing worth replaying — a SET declined
-        // by NX, or an EXPIRE against a key that was not there.
+        // A null form means the command changed nothing worth replaying — it was
+        // rejected, or it declined to act: a SET blocked by NX, an EXPIRE against a key
+        // that was not there.
         if (durable != null) {
             aof.append(new Value("array", durable));
         }

@@ -62,7 +62,13 @@ public class RedisServer {
             try {
                 aofManager.replay(db, commandProcessor, writer);
             } catch (IOException e) {
-                LOG.log(Level.SEVERE, "Failed to replay AOF file", e);
+                // Serving a half-loaded dataset is worse than not serving. Clients would
+                // see keys as missing and write over them, and those writes would append
+                // to this same file -- leaving an AOF that describes a state which never
+                // existed. Refuse to start instead.
+                LOG.log(Level.SEVERE, "Failed to replay AOF file; refusing to start", e);
+                stop();
+                throw new IllegalStateException("AOF replay failed for " + config.aofPath, e);
             }
         }
 

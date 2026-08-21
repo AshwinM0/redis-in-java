@@ -533,6 +533,59 @@ public class Database {
         }
     }
 
+    /**
+     * The whole live dataset, expressed as the commands that would rebuild it.
+     *
+     * <p>This is what AOF compaction writes in place of the accumulated history: ten
+     * million INCRs against one key collapse to a single SET. It is built under the
+     * database lock because a snapshot assembled from separate calls could catch a key
+     * mid-write and record a value alongside a TTL that never belonged to it.
+     *
+     * <p>Naming commands here is a small layering compromise. The alternative -- exposing
+     * the stores so a caller can walk them -- would hand out an unsynchronised view, which
+     * is the very thing this exists to avoid.
+     */
+    public synchronized List<List<String>> dumpAsCommands() {
+        List<List<String>> commands = new ArrayList<>();
+
+        for (String key : new HashSet<>(store.keySet())) {
+            if (reapIfExpired(key)) {
+                continue;
+            }
+            String value = store.get(key);
+            if (value != null) {
+                commands.add(List.of("SET", key, value));
+                appendDeadline(commands, key);
+            }
+        }
+
+        for (String key : new HashSet<>(hashStore.keySet())) {
+            if (reapIfExpired(key)) {
+                continue;
+            }
+            Map<String, String> fields = hashStore.get(key);
+            if (fields == null || fields.isEmpty()) {
+                continue;
+            }
+            List<String> hset = new ArrayList<>(List.of("HSET", key));
+            for (Map.Entry<String, String> field : fields.entrySet()) {
+                hset.add(field.getKey());
+                hset.add(field.getValue());
+            }
+            commands.add(hset);
+            appendDeadline(commands, key);
+        }
+
+        return commands;
+    }
+
+    private void appendDeadline(List<List<String>> commands, String key) {
+        Long deadline = expiryMap.get(key);
+        if (deadline != null) {
+            commands.add(List.of("PEXPIREAT", key, Long.toString(deadline)));
+        }
+    }
+
     public void shutdown() {
         cleaner.shutdownNow();
     }
