@@ -3,19 +3,22 @@ package redis.pubsub;
 import java.io.OutputStream;
 
 /**
- * A connected client, identified by its output stream.
+ * One connected client, identified by its output stream.
  *
- * <p>{@link #lock} serialises writes to that stream: a publishing thread and the
- * subscriber's own connection thread can otherwise interleave inside a single reply and
- * corrupt the byte stream.
+ * <p>There is exactly one Subscriber per connection, however many channels that
+ * connection is subscribed to, because {@link #lock} is what serialises writes to the
+ * socket. A per-subscription instance would hand two publishers two different locks over
+ * the same stream and let them interleave inside a single reply.
+ *
+ * <p>The lock is only ever held alone. Nothing acquires a second connection's lock while
+ * holding one, which is what keeps two clients publishing to each other from deadlocking.
  */
 public class Subscriber {
     public final OutputStream out;
-    public final Object lock; // For thread-safe writes
+    public final Object lock = new Object();
 
     public Subscriber(OutputStream out) {
         this.out = out;
-        this.lock = new Object();
     }
 
     @Override

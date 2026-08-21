@@ -42,6 +42,37 @@ public final class Protocol {
     /** Redis rejects multibulk requests with more than 1M elements; so do we. */
     public static final int MAX_ARRAY_ELEMENTS = 1024 * 1024;
 
+    /**
+     * How deep RESP arrays may nest before the parser gives up.
+     *
+     * <p>A command is an array of bulk strings, so real traffic never nests past one
+     * level. The parser recurses per level, and recursion driven by untrusted input needs
+     * a bound: without one, a client can spend a few hundred kilobytes of {@code *1
+}
+     * to overflow the connection thread's stack.
+     */
+    public static final int MAX_NESTING_DEPTH = 32;
+
+    /**
+     * Longest header or simple-string line the parser will buffer.
+     *
+     * <p>Header lines hold a decimal count, so twenty bytes is generous. The cap exists
+     * because the line is accumulated until a newline arrives, and a client that never
+     * sends one would otherwise be handed unbounded server memory.
+     */
+    public static final int MAX_LINE_LENGTH = 64 * 1024;
+
+    /**
+     * Cap on the capacity the parser will reserve up front for an array.
+     *
+     * <p>The declared element count arrives long before the elements do, so it cannot be
+     * trusted as an allocation size: {@code *1048576
+} is ten bytes and used to buy a
+     * million-slot array. The list still grows to hold whatever actually turns up, and
+     * every element costs the client real bytes to send.
+     */
+    public static final int MAX_PREALLOCATED_ELEMENTS = 1024;
+
     public static byte[] toWire(String s) {
         return s.getBytes(WIRE);
     }

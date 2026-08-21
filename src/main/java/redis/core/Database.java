@@ -24,6 +24,7 @@ public class Database {
     private static final String NOT_AN_INTEGER = "value is not an integer or out of range";
     private static final String NOT_A_FLOAT = "value is not a valid float";
     private static final String OVERFLOW = "increment or decrement would overflow";
+    private static final String INVALID_EXPIRE = "invalid expire time";
 
     /** How many keys the active-expiry cycle samples per pass. */
     private static final int EXPIRY_SAMPLE_SIZE = 20;
@@ -85,7 +86,7 @@ public class Database {
 
             int expired = 0;
             for (Map.Entry<String, Long> e : sample) {
-                if (e.getValue() <= now) {
+                if (now > e.getValue()) {
                     expired++;
                     removeExpiredKey(e.getKey());
                 }
@@ -126,17 +127,35 @@ public class Database {
                 .collect(Collectors.toList());
     }
 
-    private boolean isExpired(String key) {
-        Long exp = expiryMap.get(key);
-        if (exp == null)
+    /**
+     * The single lazy-expiry gate. Drops {@code key} from every store if its deadline has
+     * passed, and reports whether it did.
+     *
+     * <p>Every public method that reads a key, tests for its presence, or asks about its
+     * type calls this first. Reading a store directly instead lets a key that is logically
+     * dead still answer {@code TYPE}, satisfy an existence check, or — worst — be revived
+     * by a write that merges into its leftover value.
+     *
+     * <p>Expiry is {@code now > deadline}, matching Redis's {@code keyIsExpired}. Every
+     * read goes through here, so {@code TTL} and {@code GET} can no longer disagree about
+     * the boundary millisecond. ({@link #expireAt} deliberately uses the other boundary
+     * when <em>setting</em> a deadline; see the note there.)
+     */
+    private boolean reapIfExpired(String key) {
+        Long deadline = expiryMap.get(key);
+        if (deadline == null || clock.nowMillis() <= deadline) {
             return false;
-        if (clock.nowMillis() > exp) {
-            expiryMap.remove(key);
-            store.remove(key);
-            hashStore.remove(key);
-            return true;
         }
-        return false;
+        expiryMap.remove(key);
+        store.remove(key);
+        hashStore.remove(key);
+        return true;
+    }
+
+    /** True if the key is present in any store, after expiry has been applied. */
+    private boolean liveKey(String key) {
+        reapIfExpired(key);
+        return store.containsKey(key) || hashStore.containsKey(key);
     }
 
     private boolean matchesGlob(String text, String pattern) {
@@ -144,6 +163,7 @@ public class Database {
     }
 
     public synchronized String getKeyType(String key) {
+        reapIfExpired(key);
         if (store.containsKey(key))
             return "string";
         if (hashStore.containsKey(key))
@@ -168,15 +188,12 @@ public class Database {
     }
 
     public synchronized String get(String key) {
-        if (isExpired(key)) {
-            store.remove(key);
-            expiryMap.remove(key);
-            return null;
-        }
+        reapIfExpired(key);
         return store.get(key);
     }
 
     public synchronized int del(String key) {
+        reapIfExpired(key);
         boolean removed = false;
         if (store.remove(key) != null)
             removed = true;
@@ -189,58 +206,84 @@ public class Database {
     }
 
     public synchronized boolean stringStoreContainsKey(String key) {
+        reapIfExpired(key);
         return store.containsKey(key);
     }
 
-    public synchronized boolean expire(String key, int seconds) {
-        long expiryTime = clock.nowMillis() + (seconds * 1000L);
+    /** EXPIRE, in whole seconds. */
+    public synchronized boolean expire(String key, long seconds) {
+        long millis;
+        try {
+            millis = Math.multiplyExact(seconds, 1000L);
+        } catch (ArithmeticException e) {
+            throw new CommandException(INVALID_EXPIRE);
+        }
+        return pexpire(key, millis);
+    }
 
-        boolean exists = store.containsKey(key) || hashStore.containsKey(key);
-        if (!exists)
+    /** PEXPIRE: a relative deadline in milliseconds. */
+    public synchronized boolean pexpire(String key, long millis) {
+        long deadline;
+        try {
+            deadline = Math.addExact(clock.nowMillis(), millis);
+        } catch (ArithmeticException e) {
+            throw new CommandException(INVALID_EXPIRE);
+        }
+        return expireAt(key, deadline);
+    }
+
+    /**
+     * PEXPIREAT: an absolute deadline in epoch milliseconds.
+     *
+     * <p>This is the form the AOF stores. A deadline is a fact about a moment in time, so
+     * it replays to the same answer no matter when the replay happens; a relative TTL
+     * would be recomputed against the restart clock and hand a long-dead key a fresh life.
+     */
+    public synchronized boolean expireAt(String key, long deadlineMillis) {
+        if (!liveKey(key)) {
             return false;
-
-        if (seconds <= 0) {
+        }
+        // Setting a deadline that is already reached deletes the key, so EXPIRE k 0 takes
+        // effect now rather than leaving the key alive for its final millisecond. Note the
+        // boundary differs from the lazy gate's on purpose: Redis deletes on `when <= now`
+        // here but only considers a stored key dead once `now > when`.
+        if (deadlineMillis <= clock.nowMillis()) {
             del(key);
             return true;
         }
-
-        expiryMap.put(key, expiryTime);
+        expiryMap.put(key, deadlineMillis);
         return true;
     }
 
     public synchronized boolean keyExists(String key) {
-        // cleanup expired keys first
-        ttl(key);
-
-        return store.containsKey(key) || hashStore.containsKey(key);
+        return liveKey(key);
     }
 
+    /** TTL: whole seconds remaining, -1 for no expiry, -2 for no key. */
     public synchronized long ttl(String key) {
-        boolean keyExists = store.containsKey(key) || hashStore.containsKey(key); // Add future stores here: setStore,
+        long millis = pttl(key);
+        if (millis < 0) {
+            return millis; // -1 / -2 pass through unchanged
+        }
+        return (millis + 500) / 1000; // Redis rounds to the nearest second
+    }
 
-        if (!keyExists) {
+    /** PTTL: milliseconds remaining, -1 for no expiry, -2 for no key. */
+    public synchronized long pttl(String key) {
+        if (!liveKey(key)) {
             return -2;
         }
-
-        Long expiryTime = expiryMap.get(key);
-        if (expiryTime == null) {
-            return -1; // No expiry
+        Long deadline = expiryMap.get(key);
+        if (deadline == null) {
+            return -1;
         }
-
-        long remainingMillis = expiryMap.get(key) - clock.nowMillis();
-
-        if (remainingMillis <= 0) {
-            // Expired → cleanup and return -2
-            expiryMap.remove(key);
-            store.remove(key);
-            hashStore.remove(key);
-            return -2;
-        }
-
-        return remainingMillis / 1000;
+        return deadline - clock.nowMillis();
     }
 
     public synchronized int hset(String hashKey, String field, String value) {
+        // Without this an expired hash is still sitting in hashStore, so the new field
+        // merges into it and every field the key held before its TTL lapsed comes back.
+        reapIfExpired(hashKey);
         hashStore.putIfAbsent(hashKey, new ConcurrentHashMap<>());
         String present = hashStore.get(hashKey).put(field, value);
 
@@ -248,6 +291,7 @@ public class Database {
     }
 
     public synchronized int hsetnx(String key, String field, String value) {
+        reapIfExpired(key);
         Map<String, String> map = hashStore.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
         if (map.containsKey(field))
             return 0;
@@ -257,24 +301,24 @@ public class Database {
     }
 
     public synchronized int hexists(String key, String field) {
+        reapIfExpired(key);
         Map<String, String> map = hashStore.get(key);
         return (map != null && map.containsKey(field)) ? 1 : 0;
     }
 
     public synchronized int hlen(String key) {
+        reapIfExpired(key);
         Map<String, String> map = hashStore.get(key);
         return (map == null) ? 0 : map.size();
     }
 
     public synchronized boolean containsHashKey(String hashKey) {
+        reapIfExpired(hashKey);
         return hashStore.containsKey(hashKey);
     }
 
     public synchronized String hashget(String hashKey, String field) {
-        if (isExpired(hashKey)) {
-            del(hashKey);
-            return null;
-        }
+        reapIfExpired(hashKey);
         Map<String, String> map = hashStore.get(hashKey);
 
         if (map == null)
@@ -283,11 +327,7 @@ public class Database {
     }
 
     public synchronized List<Map.Entry<String, String>> getAllHashEntries(String hashKey) {
-        if (isExpired(hashKey)) {
-            del(hashKey);
-            return List.of(); // empty list if expired
-        }
-
+        reapIfExpired(hashKey);
         Map<String, String> map = hashStore.get(hashKey);
         if (map == null) {
             return List.of(); // empty list if not found
@@ -297,6 +337,7 @@ public class Database {
     }
 
     public synchronized int deleteHashField(String hashKey, String field) {
+        reapIfExpired(hashKey);
         if (!hashStore.containsKey(hashKey))
             return 0;
         Map<String, String> map = hashStore.get(hashKey);
@@ -309,6 +350,7 @@ public class Database {
     }
 
     public synchronized int deleteHashKey(String hashKey) {
+        reapIfExpired(hashKey);
         if (!hashStore.containsKey(hashKey))
             return 0;
         hashStore.remove(hashKey);
@@ -320,7 +362,8 @@ public class Database {
         return type != null && !"hash".equals(type);
     }
 
-    public Long getExpiry(String key) {
+    public synchronized Long getExpiry(String key) {
+        reapIfExpired(key);
         return expiryMap.get(key);
     }
 
@@ -366,6 +409,7 @@ public class Database {
     // ------------------------------------------------------------------
 
     private void requireNotHash(String key) {
+        reapIfExpired(key);
         if (hashStore.containsKey(key)) {
             throw new CommandException(WRONG_TYPE);
         }
@@ -450,7 +494,7 @@ public class Database {
      * @return true if the value was stored
      */
     public synchronized boolean set(String key, String value, boolean nx, boolean xx,
-            boolean keepTtl, Integer expireSeconds) {
+            boolean keepTtl, Long deadlineMillis) {
 
         // NX/XX ask whether the KEY exists, whatever type it holds, and the answer has to
         // be read before anything is dropped. Removing the hash first makes every hash key
@@ -474,12 +518,10 @@ public class Database {
             expiryMap.remove(key);
         }
 
-        if (expireSeconds != null) {
-            if (expireSeconds <= 0) {
-                del(key);
-            } else {
-                expiryMap.put(key, clock.nowMillis() + (expireSeconds * 1000L));
-            }
+        if (deadlineMillis != null) {
+            // An absolute deadline, so PX 500 keeps its 500ms instead of being truncated
+            // to zero seconds and taking the key with it.
+            expireAt(key, deadlineMillis);
         }
         return true;
     }

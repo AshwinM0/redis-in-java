@@ -17,4 +17,32 @@ public interface Command {
     default boolean isWriteCommand() {
         return false;
     }
+
+    /**
+     * Whether this command writes to connections other than the one that issued it.
+     *
+     * <p>PUBLISH does. Such a command must not run while its own connection's write lock
+     * is held: it acquires the lock of every subscriber it delivers to, so holding its own
+     * as well creates a two-lock cycle, and two clients publishing to channels the other
+     * listens on deadlock. It takes its own lock itself, around its reply alone.
+     */
+    default boolean writesToOtherConnections() {
+        return false;
+    }
+
+    /**
+     * The form of this command to write to the AOF, called after {@link #execute} has run.
+     *
+     * <p>The AOF is replayed at an unknown later time, so anything it stores has to mean
+     * the same thing then as it did now. A command carrying a <em>relative</em> TTL does
+     * not: {@code EXPIRE k 60} re-evaluated after a restart grants a fresh sixty seconds
+     * to a key that may have died hours ago. Commands in that position override this to
+     * emit an absolute deadline instead, reading back the deadline the write actually
+     * produced.
+     *
+     * @return the arguments to log, or {@code null} to log nothing
+     */
+    default List<Value> aofForm(Database db, List<Value> args) {
+        return args;
+    }
 }
