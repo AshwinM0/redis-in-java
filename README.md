@@ -5,25 +5,25 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Protocol](https://img.shields.io/badge/Protocol-RESP-red.svg)](https://redis.io/docs/latest/develop/reference/protocol-spec/)
 
-> A high-performance, multithreaded Redis server implementation built from scratch in Java. Designed to demonstrate advanced concurrency patterns, strict protocol compliance, and system-level architecture.
+> A Redis server built from scratch in Java — byte-exact RESP, durable AOF persistence, expiry with active and lazy reclamation, and Pub/Sub. Written to get the semantics right rather than to cover the most commands.
 
 ---
 
 ## 📖 Overview
 
-**Redis-In-Java** is a robust, clean-room implementation of the Redis server. It mimics the core architecture of Redis to provide a reliable, in-memory key-value store. It supports the standard **RESP (Redis Serialization Protocol)**, making it compatible with any standard Redis client (like `redis-cli`, `jedis`, or `lettuce`).
+**Redis-In-Java** is a clean-room implementation of the Redis server: an in-memory key-value store speaking the standard **RESP (Redis Serialization Protocol)**, so it can be driven by ordinary Redis clients such as `redis-cli`, Jedis or Lettuce.
 
 This project showcases:
 *   **System Design**: Clean separation of concerns (Networking, Protocol parsing, Command execution, Storage).
-*   **Concurrency**: Efficient handling of concurrent clients using thread pools and thread-safe data structures.
-*   **Persistence**: Durability guarantees via AOF (Append Only File) logs.
-*   **Real-time Messaging**: Full Pub/Sub implementation.
+*   **Concurrency**: A thread per connection for I/O, with command execution serialised — the same model Redis uses.
+*   **Persistence**: AOF logging with configurable durability, crash recovery, and compaction.
+*   **Real-time Messaging**: Pub/Sub with per-connection write serialisation.
 
 ---
 
 ## 🏗 Architecture
 
-The server follows a classic threaded-I/O architecture optimized for clarity and throughput.
+The server uses blocking I/O with a thread per connection, chosen for clarity over raw throughput.
 
 ```mermaid
 graph TD
@@ -45,41 +45,46 @@ graph TD
 
 ### Key Components
 
-*   **Networking Layer**: Uses `ServerSocket` with a cached thread pool to handle thousands of concurrent connections (blocking I/O model).
-*   **Protocol Handler**: Custom, zero-dependency RESP parser/writer that handles pipelining and complex data types (Arrays, Bulk Strings, integers, Errors).
-*   **Storage Engine**: Thread-safe in-memory database utilizing `ConcurrentHashMap` with atomic operations for consistency.
+*   **Networking Layer**: `ServerSocket` with a thread per connection (blocking I/O). Concurrency lives here: parsing and socket waits for different clients overlap freely. Connections are capped by `REDIS_MAX_CLIENTS`, since each one holds a thread for as long as it stays open.
+*   **Protocol Handler**: Custom, zero-dependency RESP parser/writer. Binary-safe — bulk-string lengths are counted in bytes, so any payload survives a `SET`/`GET` round trip unchanged. Nesting depth, element counts and line lengths are all bounded, so a small malicious frame cannot cost the server unbounded memory or stack.
+*   **Storage Engine**: An in-memory database whose methods are individually synchronised, so **commands execute one at a time**. This mirrors Redis, which is also single-threaded for command execution: a read-modify-write like `INCR` is indivisible by construction, and there is no lock-ordering surface to get wrong. It does mean throughput does not scale with cores.
+*   **Expiry**: Lazy reclamation on access, plus a background cycle that samples keys with TTLs and keeps sampling while a pass finds many expired. Every read path goes through a single expiry gate, so a key that has lapsed is invisible to `GET`, `TYPE`, `EXISTS` and the hash commands alike.
 *   **AOF Persistence Engine**:
     *   Logs write operations to an append-only file.
-    *   Supports robust crash recovery (Replay on startup).
+    *   Replays on startup, and refuses to start rather than serve a half-loaded dataset.
     *   Configurable `fsync` policies (`ALWAYS`, `EVERYSEC`, `NO`).
+    *   Stores expiries as **absolute deadlines**, so a restart does not hand a long-dead key a fresh TTL.
+    *   `BGREWRITEAOF` compacts the log to the shortest command sequence that rebuilds the current data.
 
 ---
 
 ## 🚀 Features
 
 ### Core Capabilities
-*   **⚡ High Performance**: Low-latency command execution.
-*   **🔌 RESP Compatible**: Drop-in replacement for standard Redis servers for supported commands.
-*   **⚙️ Configurable**: Fully configurable via `.env` file or environment variables.
+*   **🔌 RESP Compatible**: Speaks the standard protocol, so ordinary Redis clients can drive it for the commands it implements.
+*   **🔢 Binary Safe**: Values are byte strings — UTF-8 text, protobuf, gzip and images all round-trip intact.
+*   **⚙️ Configurable**: Via `.env` file or environment variables.
 
 ### Persistent Storage (AOF)
-Data is durable! The server supports Append-Only File persistence.
-*   **Replay Mechanism**: Automatically restores state from disk on server startup.
-*   **Safety**: Configurable fsync strategies to balance performance and data safety.
+*   **Replay Mechanism**: Restores state from disk on startup.
+*   **Safety**: Configurable fsync strategies to balance durability against speed.
+*   **Compaction**: `BGREWRITEAOF` replaces the accumulated history with the current dataset.
 
 ### Pub/Sub System
-Real-time messaging backend.
 *   `SUBSCRIBE` / `UNSUBSCRIBE`: Listen to channels.
 *   `PUBLISH`: Broadcast messages to active subscribers.
+*   Writes to a connection are serialised, so a delivered message and a command reply cannot interleave on the same socket.
 
 ### Supported Commands
 | Category | Commands |
 |----------|----------|
-| **String** | `SET` (EX, NX, XX), `GET`, `MSET`, `MGET`, `INCR`, `DECR`, `APPEND`, `STRLEN` |
-| **Hash** | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS` |
-| **Keys** | `DEL`, `EXISTS`, `KEYS`, `EXPIRE`, `TTL`, `TYPE`, `FLUSHALL` |
+| **String** | `SET` (EX, PX, EXAT, PXAT, NX, XX, KEEPTTL), `SETNX`, `GET`, `GETSET`, `GETRANGE`, `MSET`, `MGET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT` |
+| **Hash** | `HSET`, `HSETNX`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS` |
+| **Keys** | `DEL`, `EXISTS`, `KEYS`, `TYPE`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `TTL`, `PTTL`, `FLUSHALL` |
 | **Pub/Sub** | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` |
-| **Server** | `PING`, `ECHO`, `COMMAND` |
+| **Server** | `PING`, `ECHO`, `COMMAND`, `QUIT`, `BGREWRITEAOF` |
+
+Not implemented: lists, sets, sorted sets, transactions, replication, RDB snapshots, and Lua scripting.
 
 ---
 
@@ -93,8 +98,7 @@ Real-time messaging backend.
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/BunsGlazin/redis-in-java.git
-    cd redis-in-java
+    git clone https://github.com/AshwinM0/redis-in-java.git
     ```
 
 2.  **Build**
@@ -117,6 +121,13 @@ REDIS_PORT=6379
 # Threading (0 = cached/unlimited)
 REDIS_MAX_THREADS=0
 
+# Close a client that has sent nothing for this many seconds (0 = never).
+# Subscribers are exempt.
+REDIS_TIMEOUT=0
+
+# Refuse connections past this many concurrent clients
+REDIS_MAX_CLIENTS=10000
+
 # Persistence Configuration
 REDIS_AOF_ENABLED=true
 REDIS_AOF_PATH=Persistence/appendonly.aof
@@ -128,7 +139,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-The project includes a comprehensive suite of unit and integration tests.
+272 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, and connection lifecycle over real sockets.
 
 ```bash
 mvn test
