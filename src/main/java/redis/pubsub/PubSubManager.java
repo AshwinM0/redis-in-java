@@ -11,20 +11,42 @@ import java.util.concurrent.ConcurrentHashMap;
 import redis.resp.RespWriter;
 
 public class PubSubManager {
-    // Channel → Set of subscribers (their output writers)
+
+    /** Channel -> the connections listening on it. */
     private final Map<String, Set<Subscriber>> channelSubscribers = new ConcurrentHashMap<>();
 
-    // Track which channels each client is subscribed to
+    /** Which channels each connection is subscribed to. */
     private final Map<OutputStream, Set<String>> clientChannels = new ConcurrentHashMap<>();
 
+    /**
+     * One Subscriber per connection, so every channel a connection listens on shares that
+     * connection's single write lock.
+     */
+    private final Map<OutputStream, Subscriber> connections = new ConcurrentHashMap<>();
+
     private final RespWriter writer = new RespWriter();
+
+    private Subscriber connection(OutputStream out) {
+        return connections.computeIfAbsent(out, Subscriber::new);
+    }
+
+    /**
+     * The monitor that serialises writes to {@code out}.
+     *
+     * <p>A subscribed connection has two writers: its own thread, replying to commands,
+     * and any thread delivering a published message. Both must go through this, or a
+     * reply and a message interleave mid-frame and desynchronise the stream.
+     */
+    public Object lockFor(OutputStream out) {
+        return connection(out).lock;
+    }
 
     /**
      * Subscribe a client to a channel.
      * Returns the total number of channels this client is subscribed to.
      */
     public Integer subscribe(OutputStream out, String channel) {
-        Subscriber subscriber = new Subscriber(out);
+        Subscriber subscriber = connection(out);
 
         channelSubscribers.computeIfAbsent(channel, k -> ConcurrentHashMap.newKeySet()).add(subscriber);
         clientChannels.computeIfAbsent(out, k -> ConcurrentHashMap.newKeySet()).add(channel);
@@ -45,9 +67,8 @@ public class PubSubManager {
      * Returns the remaining number of channels this client is subscribed to.
      */
     public Integer unsubscribe(OutputStream out, String channel) {
-        Subscriber subscriber = new Subscriber(out);
+        Subscriber subscriber = connection(out);
 
-        // Remove from channel's subscriber set
         Set<Subscriber> subscribers = channelSubscribers.get(channel);
         if (subscribers != null) {
             subscribers.remove(subscriber);
@@ -56,16 +77,16 @@ public class PubSubManager {
             }
         }
 
-        // Update client's subscription tracking
         Set<String> channels = clientChannels.get(out);
         if (channels != null) {
             channels.remove(channel);
             if (channels.isEmpty()) {
-                clientChannels.remove(out);
+                forget(out);
                 return 0;
             }
             return channels.size();
         }
+        forget(out);
         return 0;
     }
 
@@ -75,7 +96,7 @@ public class PubSubManager {
     public void unsubscribeAll(OutputStream out) {
         Set<String> channels = clientChannels.remove(out);
         if (channels != null) {
-            Subscriber subscriber = new Subscriber(out);
+            Subscriber subscriber = connection(out);
             for (String channel : channels) {
                 Set<Subscriber> subs = channelSubscribers.get(channel);
                 if (subs != null) {
@@ -86,6 +107,13 @@ public class PubSubManager {
                 }
             }
         }
+        forget(out);
+    }
+
+    /** Drops every trace of a connection, so a closed socket leaves nothing behind. */
+    private void forget(OutputStream out) {
+        clientChannels.remove(out);
+        connections.remove(out);
     }
 
     /**
@@ -99,9 +127,11 @@ public class PubSubManager {
         }
 
         int delivered = 0;
-        List<Subscriber> toRemove = new ArrayList<>();
+        List<Subscriber> dead = new ArrayList<>();
 
         for (Subscriber sub : subscribers) {
+            // One connection's lock at a time: taken, used, released before the next is
+            // touched. Holding two would let two publishers deadlock on each other.
             try {
                 synchronized (sub.lock) {
                     // Redis Pub/Sub message format: ["message", channel, data]
@@ -113,15 +143,15 @@ public class PubSubManager {
                 }
                 delivered++;
             } catch (IOException e) {
-                // Client disconnected, mark for removal
-                toRemove.add(sub);
+                dead.add(sub);
             }
         }
 
-        // Clean up dead connections
-        for (Subscriber dead : toRemove) {
-            subscribers.remove(dead);
-            clientChannels.remove(dead.out);
+        // A broken connection is broken for every channel, not just the one that noticed.
+        // Reaping it from this channel alone left it registered on the others, where it
+        // would be retried on every publish for the life of the process.
+        for (Subscriber gone : dead) {
+            unsubscribeAll(gone.out);
         }
 
         return delivered;
