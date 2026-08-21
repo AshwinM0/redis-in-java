@@ -1,7 +1,7 @@
 # Redis-In-Java
 
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://jdk.java.net/21/)
-[![Build](https://img.shields.io/badge/Build-Maven-blue.svg)](https://maven.apache.org/)
+[![CI](https://github.com/AshwinM0/redis-in-java/actions/workflows/ci.yml/badge.svg)](https://github.com/AshwinM0/redis-in-java/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Protocol](https://img.shields.io/badge/Protocol-RESP-red.svg)](https://redis.io/docs/latest/develop/reference/protocol-spec/)
 
