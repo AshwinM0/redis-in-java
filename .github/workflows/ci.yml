@@ -29,17 +29,17 @@ jobs:
         java: ['21', '25']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up JDK ${{ matrix.java }}
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: surefire-reports-${{ matrix.os }}-jdk${{ matrix.java }}
           path: target/surefire-reports/
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload jar
         if: matrix.os == 'ubuntu-latest' && matrix.java == '21'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: redis-jar
           path: target/redis-1.0-SNAPSHOT.jar

@@ -215,13 +215,11 @@ public class DatabaseTest {
 
             @Test
             @DisplayName("db should expire a key after its TTL")
-            void testExpireAndTTL() throws InterruptedException {
-                Database db = new Database();
+            void testExpireAndTTL() {
                 db.set("temp", "123");
                 db.expire("temp", 1);
                 assertEquals(1, db.ttl("temp"));
                 clock.advanceSeconds(2);
-                Thread.sleep(1000);
                 assertEquals(-2, db.ttl("temp"));
                 assertEquals(null, db.get("temp"));
                 assertEquals(false, db.stringStoreContainsKey("temp"));
