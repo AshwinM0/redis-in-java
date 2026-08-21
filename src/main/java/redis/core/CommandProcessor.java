@@ -48,6 +48,7 @@ import redis.resp.RespWriter;
 import redis.resp.Value;
 
 import java.io.*;
+import java.util.Locale;
 
 public class CommandProcessor {
 
@@ -184,7 +185,7 @@ public class CommandProcessor {
         Command cmd = commands.get(name);
 
         if (cmd == null) {
-            writer.writeError(out, "unknown command '" + name.toLowerCase() + "'");
+            writer.writeError(out, "unknown command '" + name.toLowerCase(Locale.ROOT) + "'");
             return;
         }
 

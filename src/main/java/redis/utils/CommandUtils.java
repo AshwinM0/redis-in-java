@@ -2,6 +2,7 @@ package redis.utils;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Locale;
 
 import redis.resp.RespWriter;
 
@@ -15,7 +16,7 @@ public class CommandUtils {
 
     public static boolean arity(RespWriter writer, OutputStream out, String cmd, int actual, int expected) throws IOException {
         if (actual != expected) {
-            writer.writeError(out, "wrong number of arguments for '" + cmd.toLowerCase() + "' command");
+            writer.writeError(out, "wrong number of arguments for '" + cmd.toLowerCase(Locale.ROOT) + "' command");
             out.flush();
             return false;
         }
@@ -24,7 +25,7 @@ public class CommandUtils {
 
     public static boolean minArity(RespWriter writer, OutputStream out, String cmd, int actual, int min) throws IOException {
         if (actual < min) {
-            writer.writeError(out, "wrong number of arguments for '" + cmd.toLowerCase() + "' command");
+            writer.writeError(out, "wrong number of arguments for '" + cmd.toLowerCase(Locale.ROOT) + "' command");
             out.flush();
             return false;
         }
