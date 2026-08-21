@@ -18,14 +18,40 @@ public class RespWriter {
 
     public void writeSimple(OutputStream out, String s) throws IOException {
         out.write('+');
-        out.write(Protocol.toWire(s));
+        out.write(Protocol.toWire(singleLine(s)));
         out.write(CRLF);
     }
 
     public void writeError(OutputStream out, String s) throws IOException {
         out.write('-');
-        out.write(Protocol.toWire("ERR " + s));
+        out.write(Protocol.toWire(singleLine("ERR " + s)));
         out.write(CRLF);
+    }
+
+    /**
+     * Replaces CR and LF with spaces, as Redis does when building error replies.
+     *
+     * <p>Simple strings and errors are terminated by the first CRLF, so a payload
+     * containing one ends the frame early and everything after it is read by the client as
+     * a further reply. Several of these payloads are built from client input -- an unknown
+     * command name, a rejected command name, a PING argument -- which would let a client
+     * forge replies into its own stream and leave it permanently one reply ahead. On a
+     * pooled connection those forged replies are read by whoever borrows it next.
+     *
+     * <p>Bulk strings deliberately do not go through this: they carry an explicit byte
+     * count, so CRLF inside them is data and stripping it would break binary safety.
+     *
+     * <p>Returns the argument itself when there is nothing to replace, so the common
+     * replies ({@code +OK}, {@code +PONG}) cost no allocation.
+     */
+    private static String singleLine(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\r' || c == '\n') {
+                return s.replace('\r', ' ').replace('\n', ' ');
+            }
+        }
+        return s;
     }
 
     public void writeBulk(OutputStream out, String s) throws IOException {
