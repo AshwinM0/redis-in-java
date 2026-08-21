@@ -8,6 +8,7 @@ import redis.commands.CommandCommand;
 import redis.commands.DecrByCommand;
 import redis.commands.DecrCommand;
 import redis.commands.DelCommand;
+import redis.commands.EchoCommand;
 import redis.commands.ExistsCommand;
 import redis.commands.ExpireCommand;
 import redis.commands.FlushAllCommand;
@@ -29,6 +30,7 @@ import redis.commands.MGetCommand;
 import redis.commands.MSetCommand;
 import redis.commands.PingCommand;
 import redis.commands.PublishCommand;
+import redis.commands.QuitCommand;
 import redis.commands.SetCommand;
 import redis.commands.SetnxCommand;
 import redis.commands.StrlenCommand;
@@ -100,6 +102,8 @@ public class CommandProcessor {
         commands.put("FLUSHALL", new FlushAllCommand());
         commands.put("TYPE", new TypeCommand());
         commands.put("COMMAND", new CommandCommand());
+        commands.put("ECHO", new EchoCommand());
+        commands.put("QUIT", new QuitCommand());
 
         commands.put("SUBSCRIBE", new SubscribeCommand(pubsub));
         commands.put("UNSUBSCRIBE", new UnsubscribeCommand(pubsub));

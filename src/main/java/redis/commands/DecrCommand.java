@@ -1,5 +1,6 @@
 package redis.commands;
 
+import redis.core.CommandException;
 import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
@@ -20,25 +21,11 @@ public class DecrCommand implements Command {
 
         String key = args.get(1).str;
 
-        if (db.containsHashKey(key)) {
-            writer.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
-            return;
-        }
-
-        String val = db.get(key);
-        long num;
-
         try {
-            num = (val == null) ? 0 : Long.parseLong(val);
-        } catch (NumberFormatException e) {
-            writer.writeError(out, "value is not an integer or out of range");
-            return;
+            writer.writeInt(out, db.incrBy(key, -1));
+        } catch (CommandException e) {
+            writer.writeError(out, e.getMessage());
         }
-
-        num -= 1;
-        db.set(key, Long.toString(num));
-
-        writer.writeInt(out, num);
     }
 
     @Override

@@ -89,6 +89,26 @@ public class CommandsTest {
         }
 
         @Test
+        @DisplayName("SET NX/XX leaves a hash alone when the condition rejects the write")
+        void testSetConditionsDoNotDestroyAHash() throws IOException {
+            // NX means "only if the key is absent". A hash key is present, so this must
+            // decline — and declining has to leave the hash where it was.
+            execute(new HSetCommand(), "HSET", "h", "f", "v");
+            assertEquals("$-1\r\n", execute(new SetCommand(), "SET", "h", "new", "NX"));
+            assertEquals("v", db.hashget("h", "f"));
+
+            // XX means "only if the key is present". The key is present, but as a hash,
+            // so the write goes ahead and replaces it — that part is correct.
+            assertEquals("+OK\r\n", execute(new SetCommand(), "SET", "h", "new", "XX"));
+            assertEquals("new", db.get("h"));
+            assertEquals(0, db.hlen("h"));
+
+            // XX on a genuinely missing key still declines and creates nothing.
+            assertEquals("$-1\r\n", execute(new SetCommand(), "SET", "absent", "v", "XX"));
+            assertEquals(null, db.get("absent"));
+        }
+
+        @Test
         void testSetnx() throws IOException {
             String out1 = execute(new SetnxCommand(), "SETNX", "k", "v");
             assertEquals(":1\r\n", out1);
@@ -268,6 +288,25 @@ public class CommandsTest {
             db.set("k", "v");
             assertEquals("+OK\r\n", execute(new FlushAllCommand(), "FLUSHALL"));
             assertEquals(null, db.get("k"));
+        }
+
+        @Test
+        void testEcho() throws IOException {
+            assertEquals("$5\r\nhello\r\n", execute(new EchoCommand(), "ECHO", "hello"));
+            assertEquals("$0\r\n\r\n", execute(new EchoCommand(), "ECHO", ""));
+        }
+
+        @Test
+        void testEchoArity() throws IOException {
+            assertEquals("-ERR wrong number of arguments for 'echo' command\r\n",
+                    execute(new EchoCommand(), "ECHO"));
+            assertEquals("-ERR wrong number of arguments for 'echo' command\r\n",
+                    execute(new EchoCommand(), "ECHO", "a", "b"));
+        }
+
+        @Test
+        void testQuit() throws IOException {
+            assertEquals("+OK\r\n", execute(new QuitCommand(), "QUIT"));
         }
     }
 }

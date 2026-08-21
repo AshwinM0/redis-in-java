@@ -76,6 +76,11 @@ public class ClientHandler implements Runnable {
 
                     commandProcessor.executeCommand(command, db, writer, out, request.array, false);
                     out.flush();
+
+                    if ("QUIT".equals(command)) {
+                        LOG.info(() -> "Client sent QUIT: " + client.getRemoteSocketAddress());
+                        break;
+                    }
                 } catch (RespParseException e) {
                     // Invalid RESP format - the stream is no longer trustworthy, so
                     // report and close rather than trying to resync mid-message.

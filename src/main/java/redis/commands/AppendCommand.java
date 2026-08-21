@@ -1,5 +1,6 @@
 package redis.commands;
 
+import redis.core.CommandException;
 import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
@@ -21,19 +22,11 @@ public class AppendCommand implements Command {
         String key = args.get(1).str;
         String appendVal = args.get(2).str;
 
-        if (db.containsHashKey(key)) {
-            writer.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
-            return;
+        try {
+            writer.writeInt(out, db.appendTo(key, appendVal));
+        } catch (CommandException e) {
+            writer.writeError(out, e.getMessage());
         }
-
-        String current = db.get(key);
-        if (current == null)
-            current = "";
-
-        String newValue = current + appendVal;
-        db.set(key, newValue);
-
-        writer.writeInt(out, newValue.length());
     }
 
     @Override

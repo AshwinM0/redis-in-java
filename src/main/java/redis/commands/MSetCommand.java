@@ -6,6 +6,7 @@ import redis.resp.Value;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.List;
 
 public class MSetCommand implements Command {
@@ -18,13 +19,11 @@ public class MSetCommand implements Command {
             return;
         }
 
-        for (int i = 1; i < args.size(); i += 2) {
-            String key = args.get(i).str;
-            String value = args.get(i + 1).str;
-
-            // Convert from hash to string if necessary
-            db.setAndRemoveOlder(key, value);
+        List<String> flat = new ArrayList<>(args.size() - 1);
+        for (int i = 1; i < args.size(); i++) {
+            flat.add(args.get(i).str);
         }
+        db.mset(flat);
 
         writer.writeSimple(out, "OK");
     }

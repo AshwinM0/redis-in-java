@@ -9,9 +9,29 @@ import java.util.Random;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 import redis.time.SystemClock;
+import redis.utils.GlobMatcher;
 
 public class Database {
+
+    private static final Logger LOG = Logger.getLogger(Database.class.getName());
+
+    public static final String WRONG_TYPE =
+            "WRONGTYPE Operation against a key holding the wrong kind of value";
+    private static final String NOT_AN_INTEGER = "value is not an integer or out of range";
+    private static final String NOT_A_FLOAT = "value is not a valid float";
+    private static final String OVERFLOW = "increment or decrement would overflow";
+
+    /** How many keys the active-expiry cycle samples per pass. */
+    private static final int EXPIRY_SAMPLE_SIZE = 20;
+    /** Keep sampling while more than this share of a pass turned out to be expired. */
+    private static final double EXPIRY_CONTINUE_RATIO = 0.25;
+    /** Upper bound on passes, so one cycle can never monopolise the cleaner thread. */
+    private static final int EXPIRY_MAX_PASSES = 16;
+
     private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> expiryMap = new ConcurrentHashMap<>();
 
@@ -32,35 +52,59 @@ public class Database {
     public Database(Clock clock) {
         this.clock = clock;
         // Background thread to clean expired keys every 1 seconds
-        cleaner.scheduleAtFixedRate(this::removeSampledKeysIfExpired, 5, 1, TimeUnit.SECONDS);
+        cleaner.scheduleAtFixedRate(this::runExpiryCycle, 5, 1, TimeUnit.SECONDS);
     }
 
-    private void removeSampledKeysIfExpired() {
-        long now = clock.nowMillis();
-        List<Map.Entry<String, Long>> entriesToCheck = getRandomExpiryEntries(20);
-        int expiredCount = 20;
-        while (expiredCount / (double) entriesToCheck.size() > 0.25) {
-            expiredCount = 0;
-            for (Map.Entry<String, Long> e : entriesToCheck) {
+    /**
+     * Entry point for the scheduled cleaner.
+     *
+     * <p>{@code scheduleAtFixedRate} cancels a task permanently, and silently, the first
+     * time it throws. Swallowing here keeps active expiration alive for the life of the
+     * process no matter what one cycle runs into.
+     */
+    private void runExpiryCycle() {
+        try {
+            removeSampledKeysIfExpired();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Expiry cycle failed", e);
+        }
+    }
+
+    // Package-private so tests can drive a cycle directly instead of waiting on the
+    // scheduler.
+    void removeSampledKeysIfExpired() {
+        for (int pass = 0; pass < EXPIRY_MAX_PASSES; pass++) {
+            long now = clock.nowMillis();
+
+            // Re-sample on every pass. The previous pass deleted what it found, so
+            // reusing its snapshot would keep counting the same keys as expired.
+            List<Map.Entry<String, Long>> sample = getRandomExpiryEntries(EXPIRY_SAMPLE_SIZE);
+            if (sample.isEmpty()) {
+                return;
+            }
+
+            int expired = 0;
+            for (Map.Entry<String, Long> e : sample) {
                 if (e.getValue() <= now) {
-                    expiredCount++;
-                    String key = e.getKey();
-                    removeExpiredKey(key);
+                    expired++;
+                    removeExpiredKey(e.getKey());
                 }
+            }
+
+            // A mostly clean sample means the keyspace is mostly clean; wait for the
+            // next tick rather than scanning further.
+            if (expired / (double) sample.size() <= EXPIRY_CONTINUE_RATIO) {
+                return;
             }
         }
     }
 
-    private void removeExpiredKey(String key) {
-        switch (getKeyType(key)) {
-            case "string":
-                store.remove(key);
-                break;
-            case "hash":
-                hashStore.remove(key);
-                break;
-            default:
-                break;
+    private synchronized void removeExpiredKey(String key) {
+        String type = getKeyType(key);
+        if ("string".equals(type)) {
+            store.remove(key);
+        } else if ("hash".equals(type)) {
+            hashStore.remove(key);
         }
         expiryMap.remove(key);
     }
@@ -96,9 +140,7 @@ public class Database {
     }
 
     private boolean matchesGlob(String text, String pattern) {
-        // Convert Redis glob into a regex
-        String regex = pattern.replace("*", ".*");
-        return text.matches(regex);
+        return GlobMatcher.matches(pattern, text);
     }
 
     public synchronized String getKeyType(String key) {
@@ -313,6 +355,140 @@ public class Database {
         store.clear();
         hashStore.clear();
         expiryMap.clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Atomic read-modify-write operations.
+    //
+    // Each of these does its read, its decision and its write inside one lock.
+    // Splitting them across separate calls lets two threads read the same value
+    // and both write back, losing one of the updates.
+    // ------------------------------------------------------------------
+
+    private void requireNotHash(String key) {
+        if (hashStore.containsKey(key)) {
+            throw new CommandException(WRONG_TYPE);
+        }
+    }
+
+    private long currentAsLong(String key) {
+        String current = get(key);
+        if (current == null) {
+            return 0;
+        }
+        try {
+            return Long.parseLong(current);
+        } catch (NumberFormatException e) {
+            throw new CommandException(NOT_AN_INTEGER);
+        }
+    }
+
+    /** INCR / DECR / INCRBY / DECRBY. Returns the value after the change. */
+    public synchronized long incrBy(String key, long delta) {
+        requireNotHash(key);
+        long result;
+        try {
+            result = Math.addExact(currentAsLong(key), delta);
+        } catch (ArithmeticException e) {
+            throw new CommandException(OVERFLOW);
+        }
+        store.put(key, Long.toString(result));
+        return result;
+    }
+
+    /** INCRBYFLOAT. Returns the value after the change. */
+    public synchronized double incrByFloat(String key, double delta) {
+        requireNotHash(key);
+        String current = get(key);
+        double base;
+        if (current == null) {
+            base = 0.0;
+        } else {
+            try {
+                base = Double.parseDouble(current);
+            } catch (NumberFormatException e) {
+                throw new CommandException(NOT_A_FLOAT);
+            }
+        }
+        double result = base + delta;
+        store.put(key, Double.toString(result));
+        return result;
+    }
+
+    /** APPEND. Returns the length of the value after appending. */
+    public synchronized int appendTo(String key, String suffix) {
+        requireNotHash(key);
+        String current = get(key);
+        String updated = (current == null ? "" : current) + suffix;
+        store.put(key, updated);
+        return updated.length();
+    }
+
+    /** GETSET. Returns the previous value, keeping any TTL the key already had. */
+    public synchronized String getSet(String key, String value) {
+        requireNotHash(key);
+        String previous = get(key);
+        store.put(key, value);
+        return previous;
+    }
+
+    /** SETNX. Returns true if the value was stored. */
+    public synchronized boolean setIfAbsent(String key, String value) {
+        requireNotHash(key);
+        if (get(key) != null) {
+            return false;
+        }
+        store.put(key, value);
+        return true;
+    }
+
+    /**
+     * SET with its conditions, TTL handling and write applied as one step, so a
+     * concurrent SET cannot slip between the NX/XX check and the store.
+     *
+     * @param expireSeconds relative TTL, or null to leave expiry alone
+     * @return true if the value was stored
+     */
+    public synchronized boolean set(String key, String value, boolean nx, boolean xx,
+            boolean keepTtl, Integer expireSeconds) {
+
+        // NX/XX ask whether the KEY exists, whatever type it holds, and the answer has to
+        // be read before anything is dropped. Removing the hash first makes every hash key
+        // look absent, so NX would overwrite it and XX would destroy it on the way to
+        // reporting that it did nothing.
+        boolean exists = get(key) != null || hashStore.containsKey(key);
+        if (nx && exists) {
+            return false;
+        }
+        if (xx && !exists) {
+            return false;
+        }
+
+        hashStore.remove(key); // committed to writing: the old value goes, whatever it was
+
+        Long retained = keepTtl ? expiryMap.get(key) : null;
+        store.put(key, value);
+        if (retained != null) {
+            expiryMap.put(key, retained);
+        } else if (!keepTtl) {
+            expiryMap.remove(key);
+        }
+
+        if (expireSeconds != null) {
+            if (expireSeconds <= 0) {
+                del(key);
+            } else {
+                expiryMap.put(key, clock.nowMillis() + (expireSeconds * 1000L));
+            }
+        }
+        return true;
+    }
+
+    /** MSET. All pairs land together, so no client observes a half-applied MSET. */
+    public synchronized void mset(List<String> flatKeyValues) {
+        for (int i = 0; i < flatKeyValues.size(); i += 2) {
+            setAndRemoveOlder(flatKeyValues.get(i), flatKeyValues.get(i + 1));
+        }
     }
 
     public void shutdown() {
