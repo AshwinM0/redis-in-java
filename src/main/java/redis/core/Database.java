@@ -1,6 +1,7 @@
 package redis.core;
 
 import redis.time.Clock;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -25,6 +26,9 @@ public class Database {
     private static final String NOT_A_FLOAT = "value is not a valid float";
     private static final String OVERFLOW = "increment or decrement would overflow";
     private static final String INVALID_EXPIRE = "invalid expire time";
+
+    /** Ceiling on the printed length of an INCRBYFLOAT result. */
+    private static final int MAX_FLOAT_DIGITS = 512;
 
     /** How many keys the active-expiry cycle samples per pass. */
     private static final int EXPIRY_SAMPLE_SIZE = 20;
@@ -440,23 +444,49 @@ public class Database {
         return result;
     }
 
-    /** INCRBYFLOAT. Returns the value after the change. */
-    public synchronized double incrByFloat(String key, double delta) {
+    /**
+     * INCRBYFLOAT. Returns the value after the change, formatted for the reply.
+     *
+     * <p>Arithmetic is decimal, not binary floating point. A double cannot represent the
+     * values users type: 0.1 + 0.2 comes out as 0.30000000000000004, and Double.toString
+     * renders 3.0e10 as "3.0E10" and 1 as "1.0", none of which a Redis client expects.
+     * BigDecimal adds the numbers as written and prints them the same way.
+     *
+     * <p>It is also stricter about input, which matters here. Double.parseDouble accepts
+     * "1f", "0x1p3", "Infinity" and "NaN"; the first two are Java literal syntax that no
+     * client means to send, and the last two have no valid representation to store.
+     */
+    public synchronized String incrByFloat(String key, String delta) {
         requireNotHash(key);
+
+        BigDecimal increment = parseDecimal(delta);
         String current = get(key);
-        double base;
-        if (current == null) {
-            base = 0.0;
-        } else {
-            try {
-                base = Double.parseDouble(current);
-            } catch (NumberFormatException e) {
-                throw new CommandException(NOT_A_FLOAT);
-            }
+        BigDecimal base = (current == null) ? BigDecimal.ZERO : parseDecimal(current);
+
+        BigDecimal result = base.add(increment);
+        String formatted = formatDecimal(result);
+
+        // A result whose decimal expansion runs away is not something to store or send.
+        if (formatted.length() > MAX_FLOAT_DIGITS) {
+            throw new CommandException(NOT_A_FLOAT);
         }
-        double result = base + delta;
-        store.put(key, Double.toString(result));
-        return result;
+
+        store.put(key, formatted);
+        return formatted;
+    }
+
+    private static BigDecimal parseDecimal(String s) {
+        try {
+            return new BigDecimal(s.trim());
+        } catch (NumberFormatException | NullPointerException e) {
+            throw new CommandException(NOT_A_FLOAT);
+        }
+    }
+
+    /** Plain decimal with no exponent and no trailing zeros, as Redis renders floats. */
+    private static String formatDecimal(BigDecimal value) {
+        BigDecimal trimmed = value.stripTrailingZeros();
+        return (trimmed.scale() < 0 ? trimmed.setScale(0) : trimmed).toPlainString();
     }
 
     /** APPEND. Returns the length of the value after appending. */

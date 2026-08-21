@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Locale;
 
 public class AofManager implements Closeable {
     public enum FsyncPolicy {
@@ -158,7 +159,7 @@ public class AofManager implements Closeable {
                     continue;
                 }
 
-                String cmdName = req.array.get(0).str.toUpperCase();
+                String cmdName = req.array.get(0).str.toUpperCase(Locale.ROOT);
 
                 try {
                     // fromReplay=true => do not append again

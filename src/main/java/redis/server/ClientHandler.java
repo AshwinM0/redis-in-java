@@ -56,6 +56,15 @@ public class ClientHandler implements Runnable {
     private static final Set<String> PUBSUB_ALLOWED_COMMANDS = Set.of(
             "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET");
 
+    private static boolean hasNullArgument(java.util.List<redis.resp.Value> args) {
+        for (redis.resp.Value arg : args) {
+            if (arg == null || arg.str == null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean isPubSubAllowedCommand(String command) {
         return PUBSUB_ALLOWED_COMMANDS.contains(command);
     }
@@ -93,7 +102,15 @@ public class ClientHandler implements Runnable {
                         continue;
                     }
 
-                    String command = request.array.get(0).str.toUpperCase();
+                    // A null bulk ($-1) inside a command array leaves Value.str null.
+                    // Letting one through reaches the stores as a null key or value and
+                    // surfaces as "internal server error" from a NullPointerException.
+                    if (hasNullArgument(request.array)) {
+                        writeGuarded("Protocol error: unexpected null argument");
+                        break;
+                    }
+
+                    String command = request.array.get(0).str.toUpperCase(Locale.ROOT);
 
                     if (pubsub.isSubscribed(out) && !isPubSubAllowedCommand(command)) {
                         // Dropping this silently leaves the client blocked on a read that
