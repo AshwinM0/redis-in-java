@@ -1,31 +1,31 @@
 package redis.pubsub;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.BufferedWriter;
-import java.io.StringWriter;
 
 import org.junit.jupiter.api.*;
 
 public class PubSubManagerTest {
 
     PubSubManager pubsub;
-    BufferedWriter client1;
-    BufferedWriter client2;
-    BufferedWriter client3;
-    StringWriter output1;
-    StringWriter output2;
-    StringWriter output3;
+    OutputStream client1;
+    OutputStream client2;
+    OutputStream client3;
+    ByteArrayOutputStream output1;
+    ByteArrayOutputStream output2;
+    ByteArrayOutputStream output3;
 
     @BeforeEach
     void beforeEach() {
         pubsub = new PubSubManager();
-        output1 = new StringWriter();
-        output2 = new StringWriter();
-        output3 = new StringWriter();
-        client1 = new BufferedWriter(output1);
-        client2 = new BufferedWriter(output2);
-        client3 = new BufferedWriter(output3);
+        output1 = new ByteArrayOutputStream();
+        output2 = new ByteArrayOutputStream();
+        output3 = new ByteArrayOutputStream();
+        client1 = output1;
+        client2 = output2;
+        client3 = output3;
     }
 
     @Nested
@@ -218,7 +218,7 @@ public class PubSubManagerTest {
             pubsub.subscribe(client1, "news");
             pubsub.publish("news", "Hello World!");
             client1.flush();
-            String output = output1.toString();
+            String output = output1.toString(redis.resp.Protocol.WIRE);
             // Check that output contains the message components
             assertTrue(output.contains("message"));
             assertTrue(output.contains("news"));

@@ -1,6 +1,11 @@
 package redis.server;
 
-import java.io.*;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
 
@@ -20,12 +25,14 @@ public class ClientHandler implements Runnable {
 
     private static final Logger LOG = Logger.getLogger(ClientHandler.class.getName());
 
+    private static final int BUFFER_SIZE = 16 * 1024;
+
     private final Socket client;
     private final Database db;
     private final PubSubManager pubsub;
     private final RespWriter writer = new RespWriter();
     private final CommandProcessor commandProcessor;
-    private BufferedWriter out; // Stored as field for cleanup access
+    private OutputStream out; // Stored as field for cleanup access
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
         this.client = client;
@@ -43,8 +50,8 @@ public class ClientHandler implements Runnable {
 
     @Override
     public void run() {
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()))) {
-            out = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()));
+        try (InputStream in = new BufferedInputStream(client.getInputStream(), BUFFER_SIZE)) {
+            out = new BufferedOutputStream(client.getOutputStream(), BUFFER_SIZE);
             while (true) {
                 try {
                     // Parse next RESP message
@@ -70,9 +77,11 @@ public class ClientHandler implements Runnable {
                     commandProcessor.executeCommand(command, db, writer, out, request.array, false);
                     out.flush();
                 } catch (RespParseException e) {
-                    // Invalid RESP format - send error but keep connection open
-                    writer.writeError(out, "invalid RESP format: " + e.getMessage());
+                    // Invalid RESP format - the stream is no longer trustworthy, so
+                    // report and close rather than trying to resync mid-message.
+                    writer.writeError(out, "Protocol error: " + e.getMessage());
                     out.flush();
+                    break;
                 } catch (EOFException | SocketException e) {
                     // Abrupt or normal client disconnect
                     LOG.info(() -> "Client disconnected: " + client.getRemoteSocketAddress());

@@ -2,9 +2,9 @@ package redis.resp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
-import java.io.StringWriter;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,19 +12,19 @@ import org.junit.jupiter.api.Test;
 public class RespWriterTest {
 
     private RespWriter writer;
-    private StringWriter stringWriter;
-    private BufferedWriter out;
+    private ByteArrayOutputStream stringWriter;
+    private OutputStream out;
 
     @BeforeEach
     void setUp() {
         writer = new RespWriter();
-        stringWriter = new StringWriter();
-        out = new BufferedWriter(stringWriter);
+        stringWriter = new ByteArrayOutputStream();
+        out = stringWriter;
     }
 
     private String getOutput() throws IOException {
         out.flush();
-        return stringWriter.toString();
+        return stringWriter.toString(redis.resp.Protocol.WIRE);
     }
 
     @Test

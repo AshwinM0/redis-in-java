@@ -2,9 +2,9 @@ package redis.commands;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
-import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -20,16 +20,16 @@ public class PubSubCommandsTest {
     PubSubManager pubsub;
     Database db;
     RespWriter writer;
-    StringWriter output;
-    BufferedWriter out;
+    ByteArrayOutputStream output;
+    OutputStream out;
 
     @BeforeEach
     void beforeEach() {
         pubsub = new PubSubManager();
         db = new Database();
         writer = new RespWriter();
-        output = new StringWriter();
-        out = new BufferedWriter(output);
+        output = new ByteArrayOutputStream();
+        out = output;
     }
 
     private List<Value> makeArgs(String... args) {
@@ -52,7 +52,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("SUBSCRIBE", "news"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("subscribe"));
             assertTrue(result.contains("news"));
             assertTrue(pubsub.isSubscribed(out));
@@ -65,7 +65,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("SUBSCRIBE", "news", "sports", "weather"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("subscribe"));
             assertTrue(result.contains("news"));
             assertTrue(result.contains("sports"));
@@ -80,7 +80,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("SUBSCRIBE"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("ERR") || result.toLowerCase().contains("wrong number"));
             assertFalse(pubsub.isSubscribed(out));
         }
@@ -103,7 +103,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("UNSUBSCRIBE", "news"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("unsubscribe"));
             assertTrue(result.contains("news"));
             // Still subscribed to sports
@@ -121,7 +121,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("UNSUBSCRIBE", "news", "sports"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("unsubscribe"));
             // Still subscribed to weather
             assertTrue(pubsub.isSubscribed(out));
@@ -138,7 +138,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("UNSUBSCRIBE"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("unsubscribe"));
             assertFalse(pubsub.isSubscribed(out));
         }
@@ -152,8 +152,8 @@ public class PubSubCommandsTest {
         @DisplayName("should publish message and return subscriber count")
         void testPublishToSubscribers() throws IOException {
             // Create a subscriber
-            StringWriter subOutput = new StringWriter();
-            BufferedWriter subscriber = new BufferedWriter(subOutput);
+            ByteArrayOutputStream subOutput = new ByteArrayOutputStream();
+            OutputStream subscriber = subOutput;
             pubsub.subscribe(subscriber, "news");
 
             // Publish message
@@ -161,7 +161,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("PUBLISH", "news", "Hello!"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             // Result should contain the integer 1 (number of receivers)
             assertTrue(result.contains(":1"));
         }
@@ -173,7 +173,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("PUBLISH", "empty", "Hello!"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains(":0"));
         }
 
@@ -184,7 +184,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("PUBLISH"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("ERR") || result.toLowerCase().contains("wrong number"));
         }
 
@@ -195,7 +195,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("PUBLISH", "channel"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains("ERR") || result.toLowerCase().contains("wrong number"));
         }
 
@@ -203,9 +203,9 @@ public class PubSubCommandsTest {
         @DisplayName("should deliver message to multiple subscribers")
         void testPublishMultipleSubscribers() throws IOException {
             // Create multiple subscribers
-            BufferedWriter sub1 = new BufferedWriter(new StringWriter());
-            BufferedWriter sub2 = new BufferedWriter(new StringWriter());
-            BufferedWriter sub3 = new BufferedWriter(new StringWriter());
+            OutputStream sub1 = new ByteArrayOutputStream();
+            OutputStream sub2 = new ByteArrayOutputStream();
+            OutputStream sub3 = new ByteArrayOutputStream();
             pubsub.subscribe(sub1, "news");
             pubsub.subscribe(sub2, "news");
             pubsub.subscribe(sub3, "news");
@@ -214,7 +214,7 @@ public class PubSubCommandsTest {
             cmd.execute(db, writer, out, makeArgs("PUBLISH", "news", "Breaking!"));
             out.flush();
 
-            String result = output.toString();
+            String result = output.toString(redis.resp.Protocol.WIRE);
             assertTrue(result.contains(":3"));
         }
     }

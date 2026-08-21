@@ -111,7 +111,7 @@ public class CommandProcessor {
             String name,
             Database db,
             RespWriter writer,
-            BufferedWriter out,
+            OutputStream out,
             List<Value> args,
             boolean fromReplay)
             throws IOException {

@@ -12,7 +12,7 @@ import static redis.utils.CommandUtils.arity;
 public class SetnxCommand implements Command {
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args) throws IOException {
+    public void execute(Database db, RespWriter writer, OutputStream out, List<Value> args) throws IOException {
         if (!arity(writer, out, "SETNX", args.size(), 3))
             return;
 

@@ -43,6 +43,20 @@
                     <release>21</release>
                 </configuration>
             </plugin>
+
+            <!-- Make the produced jar directly executable: java -jar target/redis-1.0-SNAPSHOT.jar -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>redis.server.RedisServer</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

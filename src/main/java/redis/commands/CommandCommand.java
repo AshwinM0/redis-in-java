@@ -4,14 +4,14 @@ import redis.core.Database;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.List;
 
 public class CommandCommand implements Command {
 
     @Override
-    public void execute(Database db, RespWriter writer, BufferedWriter out, List<Value> args)
+    public void execute(Database db, RespWriter writer, OutputStream out, List<Value> args)
             throws IOException {
 
         // Redis: COMMAND with no args → return empty list or full command meta

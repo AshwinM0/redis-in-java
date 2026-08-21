@@ -4,17 +4,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.StringReader;
 
 import org.junit.jupiter.api.Test;
 
 public class RespParserTest {
 
     private Value parse(String input) throws IOException, RespParseException {
-        BufferedReader reader = new BufferedReader(new StringReader(input));
-        return RespParser.readValue(reader);
+        return RespParser.readValue(new ByteArrayInputStream(Protocol.toWire(input)));
     }
 
     @Test

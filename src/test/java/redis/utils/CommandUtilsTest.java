@@ -5,9 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.StringWriter;
+import java.io.OutputStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,19 +17,19 @@ import redis.resp.RespWriter;
 public class CommandUtilsTest {
 
     private RespWriter writer;
-    private StringWriter stringWriter;
-    private BufferedWriter out;
+    private ByteArrayOutputStream stringWriter;
+    private OutputStream out;
 
     @BeforeEach
     void setUp() {
         writer = new RespWriter();
-        stringWriter = new StringWriter();
-        out = new BufferedWriter(stringWriter);
+        stringWriter = new ByteArrayOutputStream();
+        out = stringWriter;
     }
 
     private String getOutput() throws IOException {
         out.flush();
-        return stringWriter.toString();
+        return stringWriter.toString(redis.resp.Protocol.WIRE);
     }
 
     @Test
