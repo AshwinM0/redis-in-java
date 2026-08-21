@@ -11,6 +11,9 @@ import redis.commands.DelCommand;
 import redis.commands.EchoCommand;
 import redis.commands.ExistsCommand;
 import redis.commands.ExpireCommand;
+import redis.commands.PExpireAtCommand;
+import redis.commands.PExpireCommand;
+import redis.commands.PTTLCommand;
 import redis.commands.FlushAllCommand;
 import redis.commands.GetCommand;
 import redis.commands.GetRangeCommand;
@@ -74,6 +77,9 @@ public class CommandProcessor {
         commands.put("DEL", new DelCommand());
         commands.put("EXPIRE", new ExpireCommand());
         commands.put("TTL", new TTLCommand());
+        commands.put("PTTL", new PTTLCommand());
+        commands.put("PEXPIRE", new PExpireCommand());
+        commands.put("PEXPIREAT", new PExpireAtCommand());
 
         commands.put("HSET", new HSetCommand());
         commands.put("HSETNX", new HSetnxCommand());
@@ -127,15 +133,27 @@ public class CommandProcessor {
             return;
         }
 
-        cmd.execute(db, writer, out, args);
+        boolean logging = !fromReplay && aof != null && cmd.isWriteCommand();
 
-        // Append to AOF if:
-        // - not from replay
-        // - AOF configured
-        // - command is mutating
-        if (!fromReplay && aof != null && cmd.isWriteCommand()) {
-            Value req = new Value("array", args);
-            aof.append(req);
+        if (!logging) {
+            cmd.execute(db, writer, out, args);
+            return;
+        }
+
+        // aofForm reads back the state the command produced, so it has to see exactly
+        // that state. Every Database method synchronizes on the database, so holding the
+        // same monitor across both makes the pair atomic against any concurrent command;
+        // without it a write landing in between would be logged in this one's place.
+        List<Value> durable;
+        synchronized (db) {
+            cmd.execute(db, writer, out, args);
+            durable = cmd.aofForm(db, args);
+        }
+
+        // A null form means the command changed nothing worth replaying — a SET declined
+        // by NX, or an EXPIRE against a key that was not there.
+        if (durable != null) {
+            aof.append(new Value("array", durable));
         }
     }
 }
