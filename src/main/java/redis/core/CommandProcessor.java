@@ -197,21 +197,26 @@ public class CommandProcessor {
         }
 
         // aofForm reads back the state the command produced, so it has to see exactly
-        // that state. Every Database method synchronizes on the database, so holding the
-        // same monitor across both makes the pair atomic against any concurrent command;
-        // without it a write landing in between would be logged in this one's place.
-        List<Value> durable;
+        // that state, and the entry has to reach the log before any other write can.
+        // Every Database method synchronizes on the database, so holding the same
+        // monitor across all three steps makes them atomic against any concurrent
+        // command. Releasing it before the append would let a second write apply after
+        // this one but be logged before it, and replay would rebuild the wrong value.
+        //
+        // That makes the lock order database, then AOF. AofManager.rewrite takes them in
+        // the same order; a path that took them the other way round could deadlock
+        // against this one.
         ErrorSniffingStream sniffer = new ErrorSniffingStream(out);
         synchronized (db) {
             cmd.execute(db, writer, sniffer, args);
-            durable = sniffer.repliedWithError() ? null : cmd.aofForm(db, args);
-        }
 
-        // A null form means the command changed nothing worth replaying — it was
-        // rejected, or it declined to act: a SET blocked by NX, an EXPIRE against a key
-        // that was not there.
-        if (durable != null) {
-            aof.append(new Value("array", durable));
+            // A null form means the command changed nothing worth replaying — it was
+            // rejected, or it declined to act: a SET blocked by NX, an EXPIRE against a
+            // key that was not there.
+            List<Value> durable = sniffer.repliedWithError() ? null : cmd.aofForm(db, args);
+            if (durable != null) {
+                aof.append(new Value("array", durable));
+            }
         }
     }
 }

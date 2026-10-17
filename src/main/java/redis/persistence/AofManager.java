@@ -89,10 +89,23 @@ public class AofManager implements Closeable {
      * <p>The new log is built in a sibling file, forced to disk, and then moved over the
      * old one under ATOMIC_MOVE, so a crash at any point leaves either the complete old
      * log or the complete new one -- never a half-written file that replay would truncate
-     * at. Appends are blocked throughout, so nothing can be written to the log being
-     * replaced.
+     * at. The database and this manager stay locked throughout, so no write can apply,
+     * or be appended to the log being replaced, until the new log is in place.
+     *
+     * <p>The locks are taken database first, the same order a write takes them in, since
+     * it appends while holding the database lock. Taking this manager's lock first and
+     * then asking for the database's would let a rewrite and a write each hold the lock
+     * the other is waiting for.
      */
-    public synchronized void rewrite(Database db) throws IOException {
+    public void rewrite(Database db) throws IOException {
+        synchronized (db) {
+            synchronized (this) {
+                rewriteLocked(db);
+            }
+        }
+    }
+
+    private void rewriteLocked(Database db) throws IOException {
         List<List<String>> commands = db.dumpAsCommands();
 
         Path temp = aofPath.resolveSibling(aofPath.getFileName() + ".rewrite");
