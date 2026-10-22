@@ -6,3 +6,4 @@ target/
 improvements.txt
 Persistence/appendonly.aof
 .env
+/docs/*
