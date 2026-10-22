@@ -53,6 +53,7 @@ graph TD
     *   Logs write operations to an append-only file.
     *   Replays on startup, and refuses to start rather than serve a half-loaded dataset.
     *   Configurable `fsync` policies (`ALWAYS`, `EVERYSEC`, `NO`).
+    *   **Group commit**: one writer thread does all the disk I/O, so writes that arrive during an fsync share the next one, and a write waiting on the disk holds no lock other clients need. Under `ALWAYS`, a write is acknowledged only once it is on disk.
     *   Stores expiries as **absolute deadlines**, so a restart does not hand a long-dead key a fresh TTL.
     *   `BGREWRITEAOF` compacts the log to the shortest command sequence that rebuilds the current data.
 
@@ -139,7 +140,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-272 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, and connection lifecycle over real sockets.
+292 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, and connection lifecycle over real sockets.
 
 ```bash
 mvn test

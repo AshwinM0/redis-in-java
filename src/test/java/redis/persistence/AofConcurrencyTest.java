@@ -133,18 +133,22 @@ class AofConcurrencyTest {
     }
 
     @Test
-    @DisplayName("A write racing BGREWRITEAOF cannot deadlock it")
+    @DisplayName("A write racing BGREWRITEAOF cannot deadlock it, or be logged twice")
     void writesDoNotDeadlockAgainstRewrite() throws Exception {
         Path aofPath = dir.resolve("a.aof");
         Session s = open(aofPath);
 
-        // A write holds the database lock while it appends, and a rewrite needs both locks.
-        // If the rewrite took them in the opposite order, each side could end up holding the
-        // lock the other is waiting for, and neither would ever finish.
+        // A write holds the database lock while it queues its entry, and a rewrite needs
+        // that lock and the AOF's. If the rewrite took them in the opposite order, each side
+        // could end up holding the lock the other is waiting for, and neither would finish.
+        //
+        // INCR rather than SET because replaying a SET twice is harmless. An entry still
+        // queued when the rewrite swapped files would land after the snapshot that already
+        // counts it, and only a count shows that.
         AtomicBoolean rewriting = new AtomicBoolean(true);
         Future<?> writes = pool.submit(() -> {
-            for (int i = 0; rewriting.get(); i++) {
-                run(s, "SET", "k", Integer.toString(i));
+            while (rewriting.get()) {
+                run(s, "INCR", "k");
             }
             return null;
         });
@@ -165,6 +169,6 @@ class AofConcurrencyTest {
         String inMemory = s.db().get("k");
         close(s);
 
-        assertEquals(inMemory, replayed(aofPath, "k"), "the rewritten log lost or reordered a write");
+        assertEquals(inMemory, replayed(aofPath, "k"), "the rewritten log lost or duplicated a write");
     }
 }

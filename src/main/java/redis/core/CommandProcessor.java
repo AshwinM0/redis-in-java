@@ -43,6 +43,7 @@ import redis.commands.TTLCommand;
 import redis.commands.TypeCommand;
 import redis.commands.UnsubscribeCommand;
 import redis.persistence.AofManager;
+import redis.persistence.AofWriteFailedException;
 import redis.pubsub.PubSubManager;
 import redis.resp.RespWriter;
 import redis.resp.Value;
@@ -98,6 +99,8 @@ public class CommandProcessor {
             delegate.flush();
         }
     }
+
+    private static final String AOF_FAILED = "AOF write failed, writes are disabled";
 
     private final Map<String, Command> commands = new HashMap<>();
     private final PubSubManager pubsub;
@@ -196,27 +199,56 @@ public class CommandProcessor {
             return;
         }
 
+        // Once the log has failed nothing more reaches it, so a write applied now would be
+        // in memory but gone after a restart. Refuse before the command touches anything.
+        if (aof.failed()) {
+            writer.writeError(out, AOF_FAILED);
+            return;
+        }
+
         // aofForm reads back the state the command produced, so it has to see exactly
-        // that state, and the entry has to reach the log before any other write can.
+        // that state, and the entry has to join the log before any other write can.
         // Every Database method synchronizes on the database, so holding the same
         // monitor across all three steps makes them atomic against any concurrent
-        // command. Releasing it before the append would let a second write apply after
-        // this one but be logged before it, and replay would rebuild the wrong value.
+        // command. Releasing it before the entry is queued would let a second write
+        // apply after this one but be logged before it, and replay would rebuild the
+        // wrong value.
         //
-        // That makes the lock order database, then AOF. AofManager.rewrite takes them in
-        // the same order; a path that took them the other way round could deadlock
-        // against this one.
-        ErrorSniffingStream sniffer = new ErrorSniffingStream(out);
-        synchronized (db) {
-            cmd.execute(db, writer, sniffer, args);
+        // Queueing is memory only. The disk work happens on the AOF's writer thread, and
+        // this thread waits for it only after letting go of the monitor, so a slow fsync
+        // holds up this client alone rather than every client.
+        //
+        // The reply is built off to the side and sent only once the entry may be
+        // acknowledged. Writing it straight to the client's stream would let a reply
+        // larger than that stream's buffer reach the socket early -- under ALWAYS, an OK
+        // for a write that a crash could still lose.
+        //
+        // Lock order is database, then the AOF's own locks. AofManager.rewrite takes them
+        // the same way; a path that took them the other way round could deadlock.
+        ByteArrayOutputStream reply = new ByteArrayOutputStream();
+        ErrorSniffingStream sniffer = new ErrorSniffingStream(reply);
+        long logEnd = 0; // where this command's entry ends in the log; 0 if it logged nothing
+        try {
+            synchronized (db) {
+                cmd.execute(db, writer, sniffer, args);
 
-            // A null form means the command changed nothing worth replaying — it was
-            // rejected, or it declined to act: a SET blocked by NX, an EXPIRE against a
-            // key that was not there.
-            List<Value> durable = sniffer.repliedWithError() ? null : cmd.aofForm(db, args);
-            if (durable != null) {
-                aof.append(new Value("array", durable));
+                // A null form means the command changed nothing worth replaying — it was
+                // rejected, or it declined to act: a SET blocked by NX, an EXPIRE against a
+                // key that was not there.
+                List<Value> durable = sniffer.repliedWithError() ? null : cmd.aofForm(db, args);
+                if (durable != null) {
+                    logEnd = aof.enqueue(new Value("array", durable));
+                }
             }
+            if (logEnd > 0) {
+                aof.awaitAcknowledgeable(logEnd);
+            }
+        } catch (AofWriteFailedException e) {
+            // The buffered reply is dropped: the client must not hear OK for a write the
+            // log does not hold.
+            writer.writeError(out, AOF_FAILED + ": " + e.getMessage());
+            return;
         }
+        reply.writeTo(out);
     }
 }
