@@ -203,7 +203,7 @@ public class RedisServer {
                 Runnable session = tls
                         ? () -> serveTls(clientSocket, ticket)
                         : new ClientHandler(clientSocket, db, commandProcessor, pubsub,
-                                config.timeoutSeconds, ticket, password);
+                                config.timeoutSeconds, config.maxConnectionAgeSeconds, ticket, password);
                 // execute, not submit: submit parks anything the handler throws in a
                 // Future nobody reads, so a thread dying on an Error leaves no trace.
                 try {
@@ -252,7 +252,8 @@ public class RedisServer {
             ticket.release();
             return;
         }
-        new ClientHandler(socket, db, commandProcessor, pubsub, config.timeoutSeconds, ticket, password).run();
+        new ClientHandler(socket, db, commandProcessor, pubsub, config.timeoutSeconds,
+                config.maxConnectionAgeSeconds, ticket, password).run();
     }
 
     /**

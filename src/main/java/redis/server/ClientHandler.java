@@ -21,6 +21,9 @@ import redis.resp.Value;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.random.RandomGenerator;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -29,6 +32,9 @@ public class ClientHandler implements Runnable {
     private static final Logger LOG = Logger.getLogger(ClientHandler.class.getName());
 
     private static final int BUFFER_SIZE = 16 * 1024;
+
+    /** How long a connection closed for its age keeps reading, so no reply is lost to a reset. */
+    private static final int LINGER_MILLIS = 2000;
 
     /**
      * What a connection may send before it authenticates: one flat command of at most ten
@@ -50,6 +56,10 @@ public class ClientHandler implements Runnable {
     private final int idleTimeoutSeconds;
     private final Admission.Ticket ticket;
     private final Password password;
+
+    private final long connectedAtNanos = System.nanoTime();
+    /** How long this connection may live, jittered; 0 for no limit. */
+    private final long maxAgeNanos;
     private OutputStream out; // Stored as field for cleanup access
 
     /**
@@ -59,16 +69,18 @@ public class ClientHandler implements Runnable {
     private boolean authenticated;
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
-        this(client, sharedDB, commandProcessor, pubsub, 0, Admission.Ticket.UNTRACKED, Password.NONE);
+        this(client, sharedDB, commandProcessor, pubsub, 0, 0, Admission.Ticket.UNTRACKED, Password.NONE);
     }
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
-            int idleTimeoutSeconds, Admission.Ticket ticket, Password password) {
+            int idleTimeoutSeconds, int maxAgeSeconds, Admission.Ticket ticket, Password password) {
         this.client = client;
         this.db = sharedDB;
         this.pubsub = pubsub;
         this.commandProcessor = commandProcessor;
         this.idleTimeoutSeconds = idleTimeoutSeconds;
+        this.maxAgeNanos = (maxAgeSeconds <= 0) ? 0
+                : TimeUnit.MILLISECONDS.toNanos(jitteredAgeMillis(maxAgeSeconds * 1000L, ThreadLocalRandom.current()));
         this.ticket = ticket;
         this.password = password;
         this.authenticated = !password.isSet();
@@ -88,6 +100,59 @@ public class ClientHandler implements Runnable {
 
     private boolean isPubSubAllowedCommand(String command) {
         return PUBSUB_ALLOWED_COMMANDS.contains(command);
+    }
+
+    /**
+     * The age a connection actually gets: between 90% and 100% of the maximum, so connections
+     * opened together, after a deploy say, do not all close and reconnect together. Jitter only
+     * ever shortens an age, so no connection outlives the configured maximum.
+     */
+    static long jitteredAgeMillis(long maxAgeMillis, RandomGenerator random) {
+        return maxAgeMillis - random.nextLong(maxAgeMillis / 10 + 1);
+    }
+
+    /** Time left before this connection's maximum age; Long.MAX_VALUE with no maximum. */
+    private long ageLeftNanos() {
+        return (maxAgeNanos == 0) ? Long.MAX_VALUE : maxAgeNanos - (System.nanoTime() - connectedAtNanos);
+    }
+
+    /**
+     * The read timeout for the next request: the idle timeout or the time left before the
+     * maximum age, whichever comes first; 0 to wait forever. The age is rounded up, so a read
+     * that times out for age really has reached the deadline.
+     */
+    private int readTimeoutMillis(long ageLeftNanos) {
+        long millis = (idleTimeoutSeconds > 0) ? idleTimeoutSeconds * 1000L : Long.MAX_VALUE;
+        if (ageLeftNanos != Long.MAX_VALUE) {
+            millis = Math.min(millis, (ageLeftNanos + 999_999) / 1_000_000);
+        }
+        return (millis > Integer.MAX_VALUE) ? 0 : (int) millis;
+    }
+
+    /**
+     * Ends a connection that has reached its maximum age without destroying replies already
+     * sent.
+     *
+     * <p>Closing a socket that still holds unread input makes TCP send a reset instead of a
+     * normal close, and a reset can make the client throw away replies it has not read yet:
+     * a pipelining client would lose the answers to commands that ran. So the server first
+     * ends its own output, which the client sees right after the last reply, then reads and
+     * discards whatever the client is still sending until it hangs up or the linger runs out.
+     * Web servers call this a lingering close.
+     */
+    private void lingeringClose(InputStream in) {
+        pubsub.unsubscribeAll(out); // a closing connection should not be sent new messages
+        try {
+            client.shutdownOutput();
+            client.setSoTimeout(LINGER_MILLIS);
+            long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(LINGER_MILLIS);
+            byte[] discard = new byte[BUFFER_SIZE];
+            while (System.nanoTime() < until && in.read(discard) != -1) {
+                // Commands that arrive now never run; their bytes are dropped.
+            }
+        } catch (IOException e) {
+            // The client hung up or went quiet. Either way its replies have had their chance.
+        }
     }
 
     private void writeGuarded(String error) throws IOException {
@@ -150,12 +215,23 @@ public class ClientHandler implements Runnable {
     @Override
     public void run() {
         try (InputStream in = new BufferedInputStream(client.getInputStream(), BUFFER_SIZE)) {
-            if (idleTimeoutSeconds > 0) {
-                client.setSoTimeout(idleTimeoutSeconds * 1000);
-            }
             out = new BufferedOutputStream(client.getOutputStream(), BUFFER_SIZE);
             while (true) {
                 try {
+                    // Past its maximum age, a connection closes here, between commands: the
+                    // last reply has gone out and nothing has been read since. Closing in the
+                    // middle of a command would leave the client unable to tell whether it
+                    // ran, and a retried INCR runs twice.
+                    long ageLeft = ageLeftNanos();
+                    if (ageLeft <= 0) {
+                        LOG.info(() -> "Closing client at its maximum age: " + client.getRemoteSocketAddress());
+                        lingeringClose(in);
+                        break;
+                    }
+                    // A blocked read has to wake for the deadline, or an idle connection -- a
+                    // subscriber above all -- would outlive it.
+                    client.setSoTimeout(readTimeoutMillis(ageLeft));
+
                     // Parse next RESP message
                     // The NOAUTH check below only sees a request once it has been read in
                     // full, so until AUTH succeeds the reading itself has to be bounded.
@@ -230,6 +306,13 @@ public class ClientHandler implements Runnable {
                     writeGuarded("Protocol error: " + e.getMessage());
                     break;
                 } catch (SocketTimeoutException e) {
+                    // The read timed out at the deadline. Any request it was part-way through
+                    // never ran, so closing still leaves no command half done.
+                    if (ageLeftNanos() <= 0) {
+                        LOG.info(() -> "Closing client at its maximum age: " + client.getRemoteSocketAddress());
+                        lingeringClose(in);
+                        break;
+                    }
                     // A subscriber is supposed to sit silent waiting for messages, so the
                     // idle timeout does not apply to one. Redis exempts them the same way.
                     if (pubsub.isSubscribed(out)) {

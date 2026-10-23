@@ -55,6 +55,13 @@ public class ServerConfig {
         /** TLS settings, or null to serve plaintext only. */
         public final TlsSettings tls;
 
+        /**
+         * Close every connection at about this many seconds old, between two commands; 0 for
+         * never. Authentication happens once, when a connection opens, so this bounds how long
+         * a client whose password or certificate has been revoked keeps the access it had.
+         */
+        public final int maxConnectionAgeSeconds;
+
         public final boolean aofEnabled;
         public final Path aofPath;
         public final FsyncPolicy fsyncPolicy;
@@ -138,7 +145,26 @@ public class ServerConfig {
                         int maxUnauthenticated,
                         int authTimeoutSeconds,
                         TlsSettings tls) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, timeoutSeconds, maxClients,
+                                bind, password, maxUnauthenticated, authTimeoutSeconds, tls, 0);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients,
+                        String bind,
+                        String password,
+                        int maxUnauthenticated,
+                        int authTimeoutSeconds,
+                        TlsSettings tls,
+                        int maxConnectionAgeSeconds) {
                 this.tls = tls;
+                this.maxConnectionAgeSeconds = maxConnectionAgeSeconds;
                 this.port = port;
                 this.bind = bind;
                 this.password = password;
@@ -199,6 +225,9 @@ public class ServerConfig {
                                         clientCa == null ? null : Path.of(clientCa));
                 }
 
+                int maxConnectionAgeSeconds = Integer.parseInt(
+                                env("REDIS_MAX_CONNECTION_AGE", "0"));
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
@@ -211,7 +240,8 @@ public class ServerConfig {
                                 password,
                                 maxUnauthenticated,
                                 authTimeoutSeconds,
-                                tls);
+                                tls,
+                                maxConnectionAgeSeconds);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

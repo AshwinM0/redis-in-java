@@ -48,6 +48,7 @@ graph TD
 *   **Networking Layer**: `ServerSocket` with a thread per connection (blocking I/O). Concurrency lives here: parsing and socket waits for different clients overlap freely. Connections are capped by `REDIS_MAX_CLIENTS`, since each one holds a thread for as long as it stays open.
 *   **Access Control**: Listens on `127.0.0.1` unless `REDIS_BIND` says otherwise, so a fresh install accepts connections from its own machine only. Setting `REDIS_PASSWORD` turns on `AUTH`: until a connection authenticates, every command except `AUTH` and `QUIT` is refused with `-NOAUTH`, and the parser holds it to small requests (a flat command of at most 10 arguments, each up to 16 KB, Redis's limits), so a stranger cannot make the server buffer large payloads. Connections that have not authenticated also share a small budget (`REDIS_MAX_UNAUTHENTICATED`) and get a deadline counted from connecting (`REDIS_AUTH_TIMEOUT`); when the budget is full, a newcomer evicts the oldest. Idle strangers can therefore neither pile up threads nor lock out the clients that do authenticate. Passwords are compared as SHA-256 digests in constant time.
 *   **TLS**: An optional second port (`REDIS_TLS_PORT`) speaks TLS 1.3 and 1.2, alongside the plaintext one or instead of it (`REDIS_PORT=0`). Connections are accepted as plain TCP and the handshake runs on the connection's own thread, so a client that stalls its handshake holds up only itself, and only until its deadline: until the handshake completes, a TLS connection counts as unauthenticated even without a password. A renewed certificate is picked up within a minute of the keystore file changing, without a restart. Setting `REDIS_TLS_CLIENT_CA` makes clients present a certificate that one of those authorities signed (mutual TLS).
+*   **Revocation**: A password or certificate is checked once, when a connection opens, so revoking one does not end connections it already opened. `REDIS_MAX_CONNECTION_AGE` bounds how long they last: each connection closes at that age, always between two commands, so no client is left unsure whether its last command ran. The close is a lingering one (output ends first, then late input is drained), so a pipelining client still receives the reply to every command that ran rather than losing them to a TCP reset.
 *   **Protocol Handler**: Custom, zero-dependency RESP parser/writer. Binary-safe — bulk-string lengths are counted in bytes, so any payload survives a `SET`/`GET` round trip unchanged. Nesting depth, element counts and line lengths are all bounded, so a small malicious frame cannot cost the server unbounded memory or stack.
 *   **Storage Engine**: An in-memory database whose methods are individually synchronised, so **commands execute one at a time**. This mirrors Redis, which is also single-threaded for command execution: a read-modify-write like `INCR` is indivisible by construction, and there is no lock-ordering surface to get wrong. It does mean throughput does not scale with cores.
 *   **Expiry**: Lazy reclamation on access, plus a background cycle that samples keys with TTLs and keeps sampling while a pass finds many expired. Every read path goes through a single expiry gate, so a key that has lapsed is invisible to `GET`, `TYPE`, `EXISTS` and the hash commands alike.
@@ -143,6 +144,12 @@ REDIS_AUTH_TIMEOUT=10
 # Optional: require client certificates signed by these authorities (PEM).
 # REDIS_TLS_CLIENT_CA=/etc/redis/client-ca.pem
 
+# Close every connection at about this many seconds old, between two commands (0 = never).
+# Authentication is checked once per connection, so this bounds how long a client whose
+# password or certificate was revoked keeps its access. Ages vary by up to 10% (shorter
+# only), so connections opened together don't all reconnect together.
+REDIS_MAX_CONNECTION_AGE=0
+
 # Threading (0 = cached/unlimited)
 REDIS_MAX_THREADS=0
 
@@ -164,7 +171,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-342 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, and connection lifecycle over real sockets.
+363 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, TLS, and connection lifecycle over real sockets.
 
 ```bash
 mvn test
