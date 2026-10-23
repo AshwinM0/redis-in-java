@@ -18,6 +18,7 @@ import redis.resp.RespParseException;
 import redis.resp.RespWriter;
 import redis.resp.Value;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.logging.Level;
@@ -36,21 +37,30 @@ public class ClientHandler implements Runnable {
     private final CommandProcessor commandProcessor;
     private final int idleTimeoutSeconds;
     private final Runnable onClose;
+    private final Password password;
     private OutputStream out; // Stored as field for cleanup access
+
+    /**
+     * Whether this connection may run commands: true from the start when there is no
+     * password, otherwise once AUTH succeeds. Only this connection's thread touches it.
+     */
+    private boolean authenticated;
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
         this(client, sharedDB, commandProcessor, pubsub, 0, () -> {
-        });
+        }, Password.NONE);
     }
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
-            int idleTimeoutSeconds, Runnable onClose) {
+            int idleTimeoutSeconds, Runnable onClose, Password password) {
         this.client = client;
         this.db = sharedDB;
         this.pubsub = pubsub;
         this.commandProcessor = commandProcessor;
         this.idleTimeoutSeconds = idleTimeoutSeconds;
         this.onClose = onClose;
+        this.password = password;
+        this.authenticated = !password.isSet();
     }
 
     private static final Set<String> PUBSUB_ALLOWED_COMMANDS = Set.of(
@@ -69,13 +79,54 @@ public class ClientHandler implements Runnable {
         return PUBSUB_ALLOWED_COMMANDS.contains(command);
     }
 
+    private void writeGuarded(String error) throws IOException {
+        writeGuarded("ERR", error);
+    }
+
     /**
      * Writes an error reply under this connection's write lock, so it cannot land in the
      * middle of a message being delivered to the same socket by a publishing thread.
      */
-    private void writeGuarded(String error) throws IOException {
+    private void writeGuarded(String code, String error) throws IOException {
         synchronized (pubsub.lockFor(out)) {
-            writer.writeError(out, error);
+            writer.writeError(out, code, error);
+            out.flush();
+        }
+    }
+
+    /**
+     * AUTH password, or AUTH username password as Redis 6 added it. There are no users here
+     * beyond Redis's "default", which is the name clients send when a URL gives none.
+     *
+     * <p>A failed attempt leaves the connection as it was, as in Redis: a client that has
+     * already authenticated stays authenticated.
+     */
+    private void auth(List<Value> args) throws IOException {
+        if (args.size() < 2) {
+            writeGuarded("wrong number of arguments for 'auth' command");
+            return;
+        }
+        if (args.size() > 3) {
+            writeGuarded("syntax error");
+            return;
+        }
+        boolean withUsername = args.size() == 3;
+        if (!withUsername && !password.isSet()) {
+            // Redis answers this too. Accepting quietly would hide a client that was set up
+            // for a different server.
+            writeGuarded("AUTH <password> called without any password configured for the default user."
+                    + " Are you sure your configuration is correct?");
+            return;
+        }
+        boolean knownUser = !withUsername || "default".equals(args.get(1).str);
+        String attempt = args.get(args.size() - 1).str;
+        if (!knownUser || (password.isSet() && !password.matches(attempt))) {
+            writeGuarded("WRONGPASS", "invalid username-password pair or user is disabled.");
+            return;
+        }
+        authenticated = true;
+        synchronized (pubsub.lockFor(out)) {
+            writer.writeSimple(out, "OK");
             out.flush();
         }
     }
@@ -112,12 +163,27 @@ public class ClientHandler implements Runnable {
 
                     String command = request.array.get(0).str.toUpperCase(Locale.ROOT);
 
+                    // Until AUTH succeeds a client may only authenticate or leave. Everything
+                    // else is refused before it is even looked up, so an unauthenticated
+                    // client learns nothing, not even which commands exist.
+                    if (!authenticated && !"AUTH".equals(command) && !"QUIT".equals(command)) {
+                        writeGuarded("NOAUTH", "Authentication required.");
+                        continue;
+                    }
+
                     if (pubsub.isSubscribed(out) && !isPubSubAllowedCommand(command)) {
                         // Dropping this silently leaves the client blocked on a read that
                         // will never be answered. Every request gets a reply.
                         writeGuarded("Can't execute '" + command.toLowerCase(Locale.ROOT)
                                 + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET"
                                 + " are allowed in this context");
+                        continue;
+                    }
+
+                    // AUTH changes this connection's state, which commands have no access to,
+                    // so it is answered here rather than by the CommandProcessor.
+                    if ("AUTH".equals(command)) {
+                        auth(request.array);
                         continue;
                     }
 

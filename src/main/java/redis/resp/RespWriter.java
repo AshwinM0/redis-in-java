@@ -23,8 +23,20 @@ public class RespWriter {
     }
 
     public void writeError(OutputStream out, String s) throws IOException {
+        writeError(out, "ERR", s);
+    }
+
+    /**
+     * An error reply under its own code: {@code -WRONGTYPE ...}, {@code -NOAUTH ...}.
+     *
+     * <p>The first word of an error is its code, and that word is what clients branch on:
+     * they map {@code WRONGTYPE}, {@code NOAUTH} or {@code WRONGPASS} to their own error
+     * types and treat {@code ERR} as generic. Sending one of those under {@code ERR} hides
+     * it, so a client checking for {@code WRONGTYPE} would never see it.
+     */
+    public void writeError(OutputStream out, String code, String message) throws IOException {
         out.write('-');
-        out.write(Protocol.toWire(singleLine("ERR " + s)));
+        out.write(Protocol.toWire(singleLine(code + " " + message)));
         out.write(CRLF);
     }
 

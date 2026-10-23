@@ -25,7 +25,7 @@ public class AppendCommand implements Command {
         try {
             writer.writeInt(out, db.appendTo(key, appendVal));
         } catch (CommandException e) {
-            writer.writeError(out, e.getMessage());
+            writer.writeError(out, e.code(), e.getMessage());
         }
     }
 

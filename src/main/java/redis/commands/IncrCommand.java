@@ -24,7 +24,7 @@ public class IncrCommand implements Command {
         try {
             writer.writeInt(out, db.incrBy(key, 1));
         } catch (CommandException e) {
-            writer.writeError(out, e.getMessage());
+            writer.writeError(out, e.code(), e.getMessage());
         }
     }
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end check against a packaged redis-in-java jar.
 
-Boots the jar the way the README tells a user to, drives it over a real socket,
-then kills it and boots it again to confirm the AOF replayed. Exits non-zero on
-the first failed expectation.
+Boots the jar the way the README tells a user to, with a password set, drives it
+over a real socket, then kills it and boots it again to confirm the AOF replayed.
+Also checks that a second server on the same port exits with an error code, which
+is how scripts and supervisors find out it never started. Exits non-zero if any
+expectation failed.
 
 Usage:
     python .github/scripts/smoke_test.py target/redis-1.0-SNAPSHOT.jar [port]
@@ -98,10 +100,14 @@ class Resp:
             pass
 
 
+PASSWORD = "smoke-test-password"
+
+
 def start_server(jar, port, aof_path):
     env = dict(os.environ)
     env.update({
         "REDIS_PORT": str(port),
+        "REDIS_PASSWORD": PASSWORD,
         "REDIS_AOF_ENABLED": "true",
         "REDIS_AOF_PATH": aof_path,
         # ALWAYS means every append is fsynced, so the hard kill below must not
@@ -133,14 +139,32 @@ def stop_server(proc):
     proc.wait(timeout=30)
 
 
+def busy_port_fails(jar, port):
+    """A server that cannot bind must exit with an error, not 0 as if it had stopped cleanly."""
+    print("startup failure")
+    env = dict(os.environ)
+    env.update({"REDIS_PORT": str(port), "REDIS_AOF_ENABLED": "false"})
+    try:
+        code = subprocess.run(["java", "-jar", jar], env=env, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        code = None  # still running: it never noticed the port was taken
+    check("a second server on a busy port exits with code 1", code, 1)
+
+
 UTF8_VALUE = "Olá, José ☕ \U0001f680"
 BINARY_VALUE = bytes(range(256))
 
 
 def first_boot(port):
-    print("protocol")
+    print("authentication")
     c = Resp("127.0.0.1", port)
+    check("commands refused before AUTH", c.call("PING"), ("-", b"NOAUTH Authentication required."))
+    check("wrong password refused", c.call("AUTH", "guess"),
+          ("-", b"WRONGPASS invalid username-password pair or user is disabled."))
+    check("AUTH default <password>", c.call("AUTH", "default", PASSWORD), ("+", b"OK"))
 
+    print("protocol")
     check("PING", c.call("PING"), ("+", b"PONG"))
     check("ECHO", c.call("ECHO", "hello world"), ("$", b"hello world"))
 
@@ -170,6 +194,11 @@ def first_boot(port):
     kind, payload = c.call("INCR", "big")
     check("INCR overflow is reported", (kind, b"overflow" in payload), ("-", True))
 
+    print("error codes")
+    c.call("HSET", "h", "f", "v")
+    kind, payload = c.call("GET", "h")
+    check("WRONGTYPE is the error code, not ERR", (kind, payload.split(b" ", 1)[0]), ("-", b"WRONGTYPE"))
+
     print("append")
     check("APPEND returns the new length", c.call("APPEND", "s", "ab"), (":", b"2"))
     c.call("APPEND", "s", "cd")
@@ -196,6 +225,7 @@ def first_boot(port):
 def second_boot(port):
     print("AOF replay after a hard kill")
     c = Resp("127.0.0.1", port)
+    check("AUTH", c.call("AUTH", PASSWORD), ("+", b"OK"))
     check("UTF-8 value survived", c.call("GET", "utf8"), ("$", UTF8_VALUE.encode("utf-8")))
     check("binary value survived", c.call("GET", "binary"), ("$", BINARY_VALUE))
     check("counter survived", c.call("GET", "ctr"), ("$", b"10"))
@@ -220,6 +250,7 @@ def main():
     proc = start_server(jar, port, aof_path)
     try:
         first_boot(port)
+        busy_port_fails(jar, port)
     finally:
         stop_server(proc)  # hard kill: no shutdown hook, no graceful flush
 

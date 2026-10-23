@@ -40,6 +40,12 @@ public class RespWriterTest {
     }
 
     @Test
+    void testWriteErrorWithItsOwnCode() throws IOException {
+        writer.writeError(out, "NOAUTH", "Authentication required.");
+        assertEquals("-NOAUTH Authentication required.\r\n", getOutput());
+    }
+
+    @Test
     void testWriteInt() throws IOException {
         writer.writeInt(out, 123);
         assertEquals(":123\r\n", getOutput());

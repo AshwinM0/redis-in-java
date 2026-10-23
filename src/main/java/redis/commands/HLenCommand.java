@@ -20,7 +20,7 @@ public class HLenCommand implements Command {
         String key = args.get(1).str;
 
         if (db.ifHashKeyTypeMismatch(key)) {
-            writer.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+            writer.writeError(out, Database.WRONG_TYPE_CODE, Database.WRONG_TYPE);
             return;
         }
 
