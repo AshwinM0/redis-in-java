@@ -32,13 +32,13 @@ class AdmissionTest {
     void withoutAPasswordOnlyMaxClientsApplies() {
         Admission admission = new Admission(2, 1, 10, false, clock);
 
-        Admission.Ticket first = admission.admit(new Socket());
-        assertNotNull(admission.admit(new Socket()));
-        assertNull(admission.admit(new Socket()), "a third client got in past maxClients of 2");
+        Admission.Ticket first = admission.admit(new Socket(), false);
+        assertNotNull(admission.admit(new Socket(), false));
+        assertNull(admission.admit(new Socket(), false), "a third client got in past maxClients of 2");
         assertEquals(0, admission.unauthenticated());
 
         first.release();
-        assertNotNull(admission.admit(new Socket()), "a released slot was not given back");
+        assertNotNull(admission.admit(new Socket(), false), "a released slot was not given back");
     }
 
     @Test
@@ -48,9 +48,9 @@ class AdmissionTest {
         Socket oldest = new Socket();
         Socket middle = new Socket();
 
-        admission.admit(oldest);
-        admission.admit(middle);
-        Admission.Ticket newest = admission.admit(new Socket());
+        admission.admit(oldest, false);
+        admission.admit(middle, false);
+        Admission.Ticket newest = admission.admit(new Socket(), false);
 
         assertNotNull(newest, "refusing the newcomer lets strangers who hold the budget lock everyone out");
         assertTrue(oldest.isClosed(), "the oldest unauthenticated connection was not evicted");
@@ -64,9 +64,9 @@ class AdmissionTest {
         Admission admission = withPassword(1, 0);
         Socket client = new Socket();
 
-        assertTrue(admission.admit(client).authenticated());
-        admission.admit(new Socket());
-        admission.admit(new Socket()); // the budget of one is full again, so this evicts
+        assertTrue(admission.admit(client, false).authenticated());
+        admission.admit(new Socket(), false);
+        admission.admit(new Socket(), false); // the budget of one is full again, so this evicts
 
         assertFalse(client.isClosed(), "an authenticated client was evicted to make room for a stranger");
     }
@@ -76,9 +76,9 @@ class AdmissionTest {
     @DisplayName("A connection that has been evicted cannot then authenticate")
     void evictionBeatsALateAuth() {
         Admission admission = withPassword(1, 0);
-        Admission.Ticket first = admission.admit(new Socket());
+        Admission.Ticket first = admission.admit(new Socket(), false);
 
-        admission.admit(new Socket()); // evicts first
+        admission.admit(new Socket(), false); // evicts first
 
         assertFalse(first.authenticated());
     }
@@ -90,9 +90,9 @@ class AdmissionTest {
         Socket early = new Socket();
         Socket late = new Socket();
 
-        admission.admit(early); // deadline at 10 s
+        admission.admit(early, false); // deadline at 10 s
         clock.advanceSeconds(5);
-        admission.admit(late); // deadline at 15 s
+        admission.admit(late, false); // deadline at 15 s
         clock.advanceSeconds(5);
         admission.expireOverdue();
 
@@ -107,7 +107,7 @@ class AdmissionTest {
         Admission admission = withPassword(128, 10);
         Socket client = new Socket();
 
-        assertTrue(admission.admit(client).authenticated());
+        assertTrue(admission.admit(client, false).authenticated());
         clock.advanceSeconds(60);
         admission.expireOverdue();
 
@@ -118,8 +118,8 @@ class AdmissionTest {
     @DisplayName("Releasing gives back a connection's slots exactly once")
     void releaseGivesBackSlotsOnce() {
         Admission admission = withPassword(1, 0);
-        Admission.Ticket evicted = admission.admit(new Socket());
-        Admission.Ticket current = admission.admit(new Socket()); // evicts the first
+        Admission.Ticket evicted = admission.admit(new Socket(), false);
+        Admission.Ticket current = admission.admit(new Socket(), false); // evicts the first
 
         assertEquals(2, admission.connected(), "an evicted connection holds its slot until its handler exits");
         evicted.release();
@@ -129,6 +129,28 @@ class AdmissionTest {
         current.release();
         assertEquals(0, admission.connected());
         assertEquals(0, admission.unauthenticated());
+    }
+
+    /**
+     * A TLS client that stalls its handshake is as much a stranger as one that never sends
+     * AUTH, so it is held to the budget and the deadline even with no password.
+     */
+    @Test
+    @DisplayName("Without a password, a TLS connection is on the clock until its handshake is done")
+    void tlsConnectionsWaitForTheirHandshake() {
+        Admission admission = new Admission(100, 128, 10, false, clock);
+        Socket stalled = new Socket();
+        Socket finished = new Socket();
+
+        admission.admit(stalled, true);
+        assertTrue(admission.admit(finished, true).authenticated()); // its handshake completed
+        assertEquals(1, admission.unauthenticated());
+
+        clock.advanceSeconds(10);
+        admission.expireOverdue();
+
+        assertTrue(stalled.isClosed(), "a stalled handshake outlived its deadline");
+        assertFalse(finished.isClosed());
     }
 
     @Test

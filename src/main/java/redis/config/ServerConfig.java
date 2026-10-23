@@ -10,6 +10,20 @@ public class ServerConfig {
         /** Loopback: only this machine can connect. Redis ships the same default. */
         public static final String DEFAULT_BIND = "127.0.0.1";
 
+        /**
+         * TLS on a port of its own, alongside the plaintext one.
+         *
+         * @param port             the TLS port
+         * @param keystore         a PKCS12 file holding the server's private key and certificate chain
+         * @param keystorePassword the keystore's password
+         * @param clientCa         PEM certificates of the authorities that sign client certificates, or
+         *                         null. When set, every TLS client must present a certificate one of
+         *                         them signed.
+         */
+        public record TlsSettings(int port, Path keystore, String keystorePassword, Path clientCa) {
+        }
+
+        /** The plaintext port. 0 turns plaintext off, which with TLS on makes the server TLS only. */
         public final int port;
 
         /**
@@ -37,6 +51,9 @@ public class ServerConfig {
          * deadline. Applies only with a password.
          */
         public final int authTimeoutSeconds;
+
+        /** TLS settings, or null to serve plaintext only. */
+        public final TlsSettings tls;
 
         public final boolean aofEnabled;
         public final Path aofPath;
@@ -104,6 +121,24 @@ public class ServerConfig {
                         String password,
                         int maxUnauthenticated,
                         int authTimeoutSeconds) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, timeoutSeconds, maxClients,
+                                bind, password, maxUnauthenticated, authTimeoutSeconds, null);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients,
+                        String bind,
+                        String password,
+                        int maxUnauthenticated,
+                        int authTimeoutSeconds,
+                        TlsSettings tls) {
+                this.tls = tls;
                 this.port = port;
                 this.bind = bind;
                 this.password = password;
@@ -150,6 +185,20 @@ public class ServerConfig {
                 int authTimeoutSeconds = Integer.parseInt(
                                 env("REDIS_AUTH_TIMEOUT", "10"));
 
+                int tlsPort = Integer.parseInt(env("REDIS_TLS_PORT", "0"));
+                TlsSettings tls = null;
+                if (tlsPort != 0) {
+                        String keystore = env("REDIS_TLS_KEYSTORE", null);
+                        if (keystore == null) {
+                                throw new IllegalArgumentException(
+                                                "REDIS_TLS_PORT is set, so REDIS_TLS_KEYSTORE must be too");
+                        }
+                        String clientCa = env("REDIS_TLS_CLIENT_CA", null);
+                        tls = new TlsSettings(tlsPort, Path.of(keystore),
+                                        env("REDIS_TLS_KEYSTORE_PASSWORD", ""),
+                                        clientCa == null ? null : Path.of(clientCa));
+                }
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
@@ -161,7 +210,8 @@ public class ServerConfig {
                                 bind,
                                 password,
                                 maxUnauthenticated,
-                                authTimeoutSeconds);
+                                authTimeoutSeconds,
+                                tls);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

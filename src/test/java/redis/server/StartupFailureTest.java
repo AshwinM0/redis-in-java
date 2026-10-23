@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
@@ -47,9 +48,10 @@ class StartupFailureTest {
 
     @Test
     @DisplayName("An address this machine doesn't have is a failed start")
-    void unassignableAddress() {
+    void unassignableAddress() throws IOException {
         // 203.0.113.0/24 is reserved for documentation, so no machine is configured with it.
-        assertFailsToStart(new RedisServer(config(0, "203.0.113.7", null)));
+        IllegalStateException e = assertFailsToStart(new RedisServer(config(freePort(), "203.0.113.7", null)));
+        assertTrue(e.getMessage().startsWith("Could not listen"), e.getMessage());
     }
 
     @Test
@@ -57,7 +59,28 @@ class StartupFailureTest {
     void unopenableAof() throws IOException {
         Path notADirectory = Files.createFile(dir.resolve("not-a-directory"));
 
-        assertFailsToStart(new RedisServer(config(0, "127.0.0.1", notADirectory.resolve("appendonly.aof"))));
+        IllegalStateException e = assertFailsToStart(
+                new RedisServer(config(freePort(), "127.0.0.1", notADirectory.resolve("appendonly.aof"))));
+        assertTrue(e.getMessage().startsWith("Could not open AOF"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("With the plaintext port off and no TLS, there is nothing to serve")
+    void nothingToListenOn() {
+        IllegalStateException e = assertFailsToStart(new RedisServer(config(0, "127.0.0.1", null)));
+        assertTrue(e.getMessage().startsWith("Nothing to listen on"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("A TLS keystore that cannot be loaded is a failed start, not a plaintext-only one")
+    void unloadableKeystore() throws IOException {
+        ServerConfig.TlsSettings tls = new ServerConfig.TlsSettings(
+                freePort(), dir.resolve("missing.p12"), "changeit", null);
+        ServerConfig cfg = new ServerConfig(freePort(), false, null, AofManager.FsyncPolicy.NO,
+                0, 0, 100, "127.0.0.1", null, 128, 10, tls);
+
+        IllegalStateException e = assertFailsToStart(new RedisServer(cfg));
+        assertTrue(e.getMessage().startsWith("Could not load TLS settings"), e.getMessage());
     }
 
     @Test

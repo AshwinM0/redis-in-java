@@ -23,8 +23,10 @@ import redis.time.Clock;
  * every client that connects afterwards is turned away. With eviction, the attacker has to
  * open a whole budget of connections in the time a legitimate client takes to send AUTH.
  *
- * <p>With no password, every connection counts as authenticated from the start and only
- * {@code maxClients} applies: a server without a password trusts whoever can reach it.
+ * <p>With no password, a plaintext connection counts as authenticated from the start and only
+ * {@code maxClients} applies: a server without a password trusts whoever can reach it. A TLS
+ * connection is not trusted until its handshake completes, password or not, so a client that
+ * stalls its handshake is held to the same budget and deadline as one that never sends AUTH.
  *
  * <p>This class is bookkeeping only and starts no threads. The server calls
  * {@link #expireOverdue} on a schedule; tests call it with a fake clock.
@@ -47,8 +49,9 @@ public final class Admission {
         };
 
         /**
-         * Records that the connection has authenticated: it leaves the unauthenticated
-         * budget, and neither the deadline nor eviction applies to it any more.
+         * Records that the connection has done what the server requires before trusting it:
+         * sent the password, or with none set, finished its TLS handshake. It leaves the
+         * unauthenticated budget, and neither the deadline nor eviction applies to it any more.
          *
          * @return false if it was evicted first, in which case its socket is being closed
          *         and the connection must not carry on
@@ -90,8 +93,10 @@ public final class Admission {
      * Takes on a new connection, or returns null when the server already holds
      * {@code maxClients}. If the unauthenticated budget is full, the oldest unauthenticated
      * connection is evicted to make room: its socket is closed, which ends its handler.
+     *
+     * @param tls whether the connection arrived on the TLS port
      */
-    public Ticket admit(Socket socket) {
+    public Ticket admit(Socket socket, boolean tls) {
         Entry evicted = null;
         Entry admitted;
         synchronized (this) {
@@ -99,7 +104,9 @@ public final class Admission {
                 return null;
             }
             connected++;
-            if (!passwordRequired) {
+            // Trusted at once only when there is nothing to wait for: no password to send
+            // and no handshake to finish.
+            if (!passwordRequired && !tls) {
                 return new Entry(socket, State.AUTHENTICATED, 0);
             }
             if (unauthenticated.size() >= maxUnauthenticated) {

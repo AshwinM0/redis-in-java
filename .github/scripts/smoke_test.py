@@ -13,6 +13,7 @@ Usage:
 
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -36,8 +37,11 @@ def check(label, actual, expected):
 class Resp:
     """A RESP client that reads replies strictly, so a wrong $N shows up here."""
 
-    def __init__(self, host, port, timeout=10):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+    def __init__(self, host, port, timeout=10, tls=None):
+        sock = socket.create_connection((host, port), timeout=timeout)
+        # With a TLS context, the handshake checks the certificate chain and that the
+        # certificate names `host`, as node-redis does.
+        self.sock = tls.wrap_socket(sock, server_hostname=host) if tls else sock
         self.buf = b""
 
     def send(self, *args):
@@ -101,12 +105,31 @@ class Resp:
 
 
 PASSWORD = "smoke-test-password"
+KEYSTORE_PASSWORD = "changeit"
 
 
-def start_server(jar, port, aof_path):
+def make_keystore(workdir):
+    """A self-signed certificate for 127.0.0.1, made with the JDK's own keytool."""
+    keystore = os.path.join(workdir, "server.p12")
+    cert = os.path.join(workdir, "server.pem")
+    quiet = {"check": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    subprocess.run(["keytool", "-genkeypair", "-alias", "server", "-keyalg", "EC",
+                    "-groupname", "secp256r1", "-dname", "CN=localhost",
+                    "-ext", "san=dns:localhost,ip:127.0.0.1", "-validity", "30",
+                    "-keystore", keystore, "-storetype", "PKCS12",
+                    "-storepass", KEYSTORE_PASSWORD, "-keypass", KEYSTORE_PASSWORD], **quiet)
+    subprocess.run(["keytool", "-exportcert", "-alias", "server", "-keystore", keystore,
+                    "-storepass", KEYSTORE_PASSWORD, "-rfc", "-file", cert], **quiet)
+    return keystore, cert
+
+
+def start_server(jar, port, aof_path, keystore):
     env = dict(os.environ)
     env.update({
         "REDIS_PORT": str(port),
+        "REDIS_TLS_PORT": str(port + 1),
+        "REDIS_TLS_KEYSTORE": keystore,
+        "REDIS_TLS_KEYSTORE_PASSWORD": KEYSTORE_PASSWORD,
         "REDIS_PASSWORD": PASSWORD,
         "REDIS_AUTH_TIMEOUT": "1",
         "REDIS_AOF_ENABLED": "true",
@@ -157,7 +180,15 @@ UTF8_VALUE = "Olá, José ☕ \U0001f680"
 BINARY_VALUE = bytes(range(256))
 
 
-def first_boot(port):
+def first_boot(port, server_cert):
+    print("TLS")
+    secure = Resp("127.0.0.1", port + 1, tls=ssl.create_default_context(cafile=server_cert))
+    check("handshake verifies the certificate and its name",
+          secure.sock.version() in ("TLSv1.3", "TLSv1.2"), True)
+    check("AUTH over TLS", secure.call("AUTH", PASSWORD), ("+", b"OK"))
+    check("a command over TLS", secure.call("PING"), ("+", b"PONG"))
+    secure.close()
+
     print("authentication")
     c = Resp("127.0.0.1", port)
     check("commands refused before AUTH", c.call("PING"), ("-", b"NOAUTH Authentication required."))
@@ -259,17 +290,18 @@ def main():
 
     workdir = tempfile.mkdtemp(prefix="redis-smoke-")
     aof_path = os.path.join(workdir, "appendonly.aof")
+    keystore, server_cert = make_keystore(workdir)
 
     print("== boot 1 ==")
-    proc = start_server(jar, port, aof_path)
+    proc = start_server(jar, port, aof_path, keystore)
     try:
-        first_boot(port)
+        first_boot(port, server_cert)
         busy_port_fails(jar, port)
     finally:
         stop_server(proc)  # hard kill: no shutdown hook, no graceful flush
 
     print("== boot 2 ==")
-    proc = start_server(jar, port, aof_path)
+    proc = start_server(jar, port, aof_path, keystore)
     try:
         second_boot(port)
     finally:

@@ -13,7 +13,12 @@ import redis.resp.RespWriter;
 import redis.time.SystemClock;
 
 import java.net.*;
+import java.security.GeneralSecurityException;
+import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+
+import javax.net.ssl.SSLSocket;
 
 public class RedisServer {
 
@@ -25,11 +30,14 @@ public class RedisServer {
     private final Database db = new Database();
     private final PubSubManager pubsub = new PubSubManager();
 
-    private ServerSocket serverSocket;
+    private final List<ServerSocket> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean running = true;
     private volatile boolean stopped = false;
     private final Admission admission;
-    private volatile ScheduledExecutorService deadlineSweeper; // only with a password and a deadline
+    private volatile TlsContext tlsContext; // null without TLS
+    private volatile ScheduledExecutorService housekeeping; // deadlines and certificate reloads
+    /** Why a listener stopped accepting on its own, if one did. The first failure wins. */
+    private final AtomicReference<IllegalStateException> acceptFailure = new AtomicReference<>();
 
     private final RespWriter writer = new RespWriter();;
     private AofManager aofManager;
@@ -92,82 +100,159 @@ public class RedisServer {
             stop();
         }));
 
-        try {
-            this.serverSocket = new ServerSocket();
-            serverSocket.setReuseAddress(true); // allow immediate reuse
-            // Port alone would mean every interface. Taking the address from config is what
-            // keeps the default reachable from this machine only.
-            serverSocket.bind(new InetSocketAddress(InetAddress.getByName(config.bind), config.port));
-        } catch (IOException e) {
-            // A busy port, or an address this machine doesn't have. Returning here used to
-            // let main() exit 0, which a supervisor or a script waiting on the process reads
-            // as a clean shutdown.
+        if (config.port == 0 && config.tls == null) {
             stop();
-            throw new IllegalStateException("Could not listen on " + config.bind + ":" + config.port, e);
+            throw new IllegalStateException("Nothing to listen on: REDIS_PORT is 0 and TLS is off");
         }
+
+        if (config.tls != null) {
+            try {
+                tlsContext = new TlsContext(config.tls.keystore(), config.tls.keystorePassword(),
+                        config.tls.clientCa());
+            } catch (IOException | GeneralSecurityException e) {
+                // Carrying on without the TLS port that was asked for would leave clients
+                // that require encryption with nowhere to connect, or tempt them to plaintext.
+                stop();
+                throw new IllegalStateException("Could not load TLS settings from " + config.tls.keystore(), e);
+            }
+        }
+
+        // TLS binds first, so a client that finds the plaintext port up can rely on TLS too.
+        ServerSocket tlsListener = (config.tls == null) ? null : listen(config.tls.port());
+        ServerSocket plainListener = (config.port == 0) ? null : listen(config.port);
 
         // Scripts wait for "listening on port" to know the server is up; keep that wording.
-        LOG.info(() -> "Redis server listening on port " + serverSocket.getLocalPort()
-                + " (bind " + serverSocket.getInetAddress().getHostAddress() + ")");
-        if (!password.isSet() && !serverSocket.getInetAddress().isLoopbackAddress()) {
-            // Redis refuses outside clients outright in this state ("protected mode"). This
-            // only warns, but the loopback default keeps a fresh install out of it.
-            LOG.warning(() -> "No REDIS_PASSWORD is set and other machines can connect (bind "
-                    + serverSocket.getInetAddress().getHostAddress()
-                    + "). Anyone who can reach this port can read and change every key.");
+        for (ServerSocket listener : listeners) {
+            String kind = (listener == tlsListener) ? ", TLS" : "";
+            LOG.info(() -> "Redis server listening on port " + listener.getLocalPort()
+                    + " (bind " + listener.getInetAddress().getHostAddress() + kind + ")");
+        }
+        InetAddress bound = listeners.get(0).getInetAddress();
+        if (!bound.isLoopbackAddress()) {
+            if (!password.isSet()) {
+                // Redis refuses outside clients outright in this state ("protected mode").
+                // This only warns, but the loopback default keeps a fresh install out of it.
+                LOG.warning(() -> "No REDIS_PASSWORD is set and other machines can connect (bind "
+                        + bound.getHostAddress()
+                        + "). Anyone who can reach this port can read and change every key.");
+            }
+            if (tlsListener != null && plainListener != null) {
+                LOG.warning(() -> "Plaintext port " + config.port + " is open to other machines"
+                        + " alongside TLS. Set REDIS_PORT=0 to accept TLS only.");
+            }
         }
 
-        if (password.isSet() && config.authTimeoutSeconds > 0) {
-            deadlineSweeper = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "auth-deadlines");
-                t.setDaemon(true);
-                return t;
-            });
-            // Once a second, so a deadline holds to within a second. A connection that is
-            // blocked reading cannot notice its own deadline; this thread closes its socket.
-            deadlineSweeper.scheduleAtFixedRate(this::expireOverdue, 1, 1, TimeUnit.SECONDS);
+        startHousekeeping();
+
+        // Each listener needs a thread blocked in accept(). This thread takes one, so start()
+        // still returns only once the server stops.
+        if (tlsListener != null && plainListener != null) {
+            Thread tlsAcceptor = new Thread(() -> acceptLoop(tlsListener, true), "tls-acceptor");
+            tlsAcceptor.setDaemon(true);
+            tlsAcceptor.start();
+        }
+        if (plainListener != null) {
+            acceptLoop(plainListener, false);
+        } else {
+            acceptLoop(tlsListener, true);
         }
 
+        IllegalStateException failure = acceptFailure.get();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    /**
+     * Binds a listening socket, or fails the start: a busy port, an address this machine
+     * doesn't have. Returning normally here used to let main() exit 0, which a supervisor or a
+     * script waiting on the process reads as a clean shutdown.
+     */
+    private ServerSocket listen(int port) {
+        try {
+            ServerSocket listener = new ServerSocket();
+            listeners.add(listener); // so stop() closes it, whatever happens next
+            listener.setReuseAddress(true); // allow immediate reuse
+            // Port alone would mean every interface. Taking the address from config is what
+            // keeps the default reachable from this machine only.
+            listener.bind(new InetSocketAddress(InetAddress.getByName(config.bind), port));
+            return listener;
+        } catch (IOException e) {
+            stop();
+            throw new IllegalStateException("Could not listen on " + config.bind + ":" + port, e);
+        }
+    }
+
+    /**
+     * Takes connections from one listener until the server stops. If accepting fails while the
+     * server is meant to be running, records why and stops the whole server, which is no
+     * longer serving everything it was asked to.
+     */
+    private void acceptLoop(ServerSocket listener, boolean tls) {
         try {
             while (running) {
-                try {
-                    Socket clientSocket = serverSocket.accept();
-                    Admission.Ticket ticket = admission.admit(clientSocket);
-                    if (ticket == null) {
-                        refuse(clientSocket);
-                        continue;
-                    }
+                Socket clientSocket = listener.accept();
+                Admission.Ticket ticket = admission.admit(clientSocket, tls);
+                if (ticket == null) {
+                    refuse(clientSocket, tls);
+                    continue;
+                }
 
-                    LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress());
-                    // execute, not submit: submit parks anything the handler throws in a
-                    // Future nobody reads, so a thread dying on an Error leaves no trace.
-                    try {
-                        threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub,
-                                config.timeoutSeconds, ticket, password));
-                    } catch (RejectedExecutionException e) {
-                        // The pool refuses work only once stop() has shut it down, and that can
-                        // land between accept() returning and this call. Checking `running`
-                        // first would not close the gap. It is a requested stop, like the
-                        // SocketException below, so drop the client and leave normally.
-                        ticket.release();
-                        closeQuietly(clientSocket);
-                        break;
-                    }
-                } catch (SocketException e) {
-                    if (!running) {
-                        break; // stop() closed the socket to end accept(): the normal way out
-                    }
-                    throw e;
+                LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress()
+                        + (tls ? " (TLS)" : ""));
+                Runnable session = tls
+                        ? () -> serveTls(clientSocket, ticket)
+                        : new ClientHandler(clientSocket, db, commandProcessor, pubsub,
+                                config.timeoutSeconds, ticket, password);
+                // execute, not submit: submit parks anything the handler throws in a
+                // Future nobody reads, so a thread dying on an Error leaves no trace.
+                try {
+                    threadPool.execute(session);
+                } catch (RejectedExecutionException e) {
+                    // The pool refuses work only once stop() has shut it down, and that can
+                    // land between accept() returning and this call. Checking `running` first
+                    // would not close the gap. It is a requested stop, so drop the client and
+                    // leave normally.
+                    ticket.release();
+                    closeQuietly(clientSocket);
+                    return;
                 }
             }
-
         } catch (IOException e) {
-            // Still meant to be running, so the server stopped serving on its own.
-            throw new IllegalStateException(
-                    "Stopped accepting connections on " + config.bind + ":" + config.port, e);
+            // stop() closes the listener to end accept(), so after a stop this is the normal
+            // way out. Otherwise the server has stopped serving on its own.
+            if (running) {
+                acceptFailure.compareAndSet(null, new IllegalStateException(
+                        "Stopped accepting connections on " + listener.getLocalSocketAddress(), e));
+            }
         } finally {
             stop();
         }
+    }
+
+    /**
+     * A TLS connection, on its own thread: the handshake, then the session. The accept thread
+     * never touches TLS, so a client that stalls its handshake holds up only itself, and only
+     * until its deadline: Admission counts it as unauthenticated until the handshake is done.
+     */
+    private void serveTls(Socket accepted, Admission.Ticket ticket) {
+        SSLSocket socket;
+        try {
+            socket = tlsContext.handshake(accepted);
+        } catch (IOException e) {
+            LOG.info(() -> "TLS handshake failed for " + accepted.getRemoteSocketAddress() + ": " + e.getMessage());
+            closeQuietly(accepted);
+            ticket.release();
+            return;
+        }
+        // With no password, finishing the handshake is all the server asks before trusting a
+        // client. False means the deadline closed this connection while it was handshaking.
+        if (!password.isSet() && !ticket.authenticated()) {
+            closeQuietly(socket);
+            ticket.release();
+            return;
+        }
+        new ClientHandler(socket, db, commandProcessor, pubsub, config.timeoutSeconds, ticket, password).run();
     }
 
     /**
@@ -178,9 +263,15 @@ public class RedisServer {
      * reply; accepting without one trades an unbounded number of threads for an
      * out-of-memory that takes the whole server with it.
      */
-    private void refuse(Socket clientSocket) {
+    private void refuse(Socket clientSocket, boolean tls) {
         LOG.warning(() -> "Refusing client, at limit of " + config.maxClients + ": "
                 + clientSocket.getRemoteSocketAddress());
+        if (tls) {
+            // An error reply would need a handshake first, here on the accept thread. Closing
+            // is the only answer that costs nothing.
+            closeQuietly(clientSocket);
+            return;
+        }
         try (Socket refused = clientSocket) {
             writer.writeError(refused.getOutputStream(), "max number of clients reached");
             refused.getOutputStream().flush();
@@ -189,13 +280,40 @@ public class RedisServer {
         }
     }
 
-    private void expireOverdue() {
-        // scheduleAtFixedRate cancels a task for good, and silently, the first time it
-        // throws. Catching here keeps deadlines enforced for the life of the server.
+    /** Periodic upkeep on one daemon thread: connection deadlines, and renewed certificates. */
+    private void startHousekeeping() {
+        boolean deadlines = (password.isSet() || tlsContext != null) && config.authTimeoutSeconds > 0;
+        if (!deadlines && tlsContext == null) {
+            return;
+        }
+        housekeeping = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "housekeeping");
+            t.setDaemon(true);
+            return t;
+        });
+        if (deadlines) {
+            // Once a second, so a deadline holds to within a second. A connection that is
+            // blocked reading cannot notice its own deadline; this thread closes its socket.
+            housekeeping.scheduleAtFixedRate(
+                    () -> guarded("Closing connections past their deadline", admission::expireOverdue),
+                    1, 1, TimeUnit.SECONDS);
+        }
+        if (tlsContext != null) {
+            housekeeping.scheduleAtFixedRate(
+                    () -> guarded("Reloading TLS settings", tlsContext::reloadIfChanged),
+                    60, 60, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * scheduleAtFixedRate cancels a task for good, and silently, the first time it throws.
+     * Catching here keeps the upkeep running for the life of the server.
+     */
+    private static void guarded(String what, Runnable task) {
         try {
-            admission.expireOverdue();
+            task.run();
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Closing connections past their AUTH deadline failed", e);
+            LOG.log(Level.WARNING, what + " failed", e);
         }
     }
 
@@ -221,16 +339,16 @@ public class RedisServer {
 
         System.err.println("Shutting down Redis server...");
 
-        try {
-            if (serverSocket != null && !serverSocket.isClosed()) {
-                serverSocket.close();
+        for (ServerSocket listener : listeners) {
+            try {
+                listener.close();
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "Error closing server socket", e);
             }
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Error closing server socket", e);
         }
 
-        if (deadlineSweeper != null) {
-            deadlineSweeper.shutdownNow();
+        if (housekeeping != null) {
+            housekeeping.shutdownNow();
         }
 
         threadPool.shutdown();
