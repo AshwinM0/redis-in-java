@@ -7,7 +7,23 @@ import redis.persistence.AofManager.FsyncPolicy;
 
 public class ServerConfig {
 
+        /** Loopback: only this machine can connect. Redis ships the same default. */
+        public static final String DEFAULT_BIND = "127.0.0.1";
+
         public final int port;
+
+        /**
+         * The address to listen on. Anything other than loopback should come with a
+         * {@link #password}: whoever can reach the port can read and change every key, and
+         * on a chat backend publish forged events to any user.
+         */
+        public final String bind;
+
+        /**
+         * What AUTH checks, or null for no password. With one set, a connection can do
+         * nothing but AUTH or QUIT until it authenticates.
+         */
+        public final String password;
         public final boolean aofEnabled;
         public final Path aofPath;
         public final FsyncPolicy fsyncPolicy;
@@ -44,7 +60,23 @@ public class ServerConfig {
                         int maxThreads,
                         int timeoutSeconds,
                         int maxClients) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, timeoutSeconds, maxClients,
+                                DEFAULT_BIND, null);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients,
+                        String bind,
+                        String password) {
                 this.port = port;
+                this.bind = bind;
+                this.password = password;
                 this.aofEnabled = aofEnabled;
                 this.aofPath = aofPath;
                 this.fsyncPolicy = fsyncPolicy;
@@ -75,6 +107,11 @@ public class ServerConfig {
                 int maxClients = Integer.parseInt(
                                 env("REDIS_MAX_CLIENTS", "10000"));
 
+                String bind = env("REDIS_BIND", DEFAULT_BIND);
+
+                // env() treats an empty value as unset, so REDIS_PASSWORD= means no password.
+                String password = env("REDIS_PASSWORD", null);
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
@@ -82,7 +119,9 @@ public class ServerConfig {
                                 fsyncPolicy,
                                 maxThreads,
                                 timeoutSeconds,
-                                maxClients);
+                                maxClients,
+                                bind,
+                                password);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

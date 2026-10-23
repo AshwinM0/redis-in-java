@@ -95,13 +95,43 @@ class ProtocolCorrectnessTest {
     @DisplayName("Type errors are reported, not disguised as a missing key")
     class WrongType {
 
+        private static final String WRONG_TYPE_REPLY =
+                "-WRONGTYPE Operation against a key holding the wrong kind of value" + Protocol.CRLF_TEXT;
+
         @Test
         void getOnAHashSaysWrongType() throws IOException {
             run("HSET", "h", "f", "v");
 
-            String reply = run("GET", "h");
-            assertTrue(reply.startsWith("-ERR WRONGTYPE"),
-                    "GET reported a hash as absent, inviting the client to overwrite it: " + reply);
+            assertEquals(WRONG_TYPE_REPLY, run("GET", "h"),
+                    "GET must report a hash as the wrong type, not as absent, which invites an overwrite");
+        }
+
+        /**
+         * WRONGTYPE is an error code of its own, and clients branch on the first word of an
+         * error. Sent as "-ERR WRONGTYPE ...", it reads as a generic error.
+         */
+        @Test
+        void wrongTypeIsItsOwnErrorCodeNotErr() throws IOException {
+            run("SET", "s", "v");
+
+            assertEquals(WRONG_TYPE_REPLY, run("HGET", "s", "f"));
+        }
+
+        /** The read-modify-write commands reject from inside Database, through CommandException. */
+        @Test
+        void wrongTypeRaisedInsideTheDatabaseKeepsItsCode() throws IOException {
+            run("HSET", "h", "f", "v");
+
+            assertEquals(WRONG_TYPE_REPLY, run("INCR", "h"));
+            assertEquals(WRONG_TYPE_REPLY, run("APPEND", "h", "x"));
+        }
+
+        @Test
+        void aGenericErrorFromTheSamePathIsStillErr() throws IOException {
+            run("SET", "word", "hello");
+
+            assertEquals("-ERR value is not an integer or out of range" + Protocol.CRLF_TEXT,
+                    run("INCR", "word"));
         }
 
         @Test

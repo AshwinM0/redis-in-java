@@ -29,7 +29,7 @@ public class DecrByCommand implements Command {
         try {
             writer.writeInt(out, db.incrBy(key, -decrement));
         } catch (CommandException e) {
-            writer.writeError(out, e.getMessage());
+            writer.writeError(out, e.code(), e.getMessage());
         }
     }
 

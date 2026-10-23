@@ -23,7 +23,7 @@ public class SetnxCommand implements Command {
         try {
             writer.writeInt(out, db.setIfAbsent(snxKey, snxValue) ? 1 : 0);
         } catch (CommandException e) {
-            writer.writeError(out, e.getMessage());
+            writer.writeError(out, e.code(), e.getMessage());
         }
     }
 

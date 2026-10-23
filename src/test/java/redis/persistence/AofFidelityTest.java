@@ -70,7 +70,7 @@ class AofFidelityTest {
         Session s = open(aofPath, START);
 
         run(s, "SET", "s", "v");
-        assertTrue(run(s, "HSET", "s", "f", "v").startsWith("-ERR"), "expected WRONGTYPE");
+        assertTrue(run(s, "HSET", "s", "f", "v").startsWith("-WRONGTYPE"), "expected WRONGTYPE");
         assertTrue(run(s, "SET", "s", "v3", "GARBAGE").startsWith("-ERR"), "expected syntax error");
         close(s);
 

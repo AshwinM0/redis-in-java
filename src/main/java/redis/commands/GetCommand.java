@@ -22,7 +22,7 @@ public class GetCommand implements Command {
         // Every other string command guards this; GET returning nil made a hash look
         // like a missing key, which is the one answer that invites a client to overwrite it.
         if (db.containsHashKey(key)) {
-            writer.writeError(out, Database.WRONG_TYPE);
+            writer.writeError(out, Database.WRONG_TYPE_CODE, Database.WRONG_TYPE);
             return;
         }
 

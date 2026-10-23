@@ -19,6 +19,7 @@ public class RedisServer {
     private static final Logger LOG = Logger.getLogger(RedisServer.class.getName());
 
     private final ServerConfig config;
+    private final Password password;
     private final ExecutorService threadPool;
     private final Database db = new Database();
     private final PubSubManager pubsub = new PubSubManager();
@@ -39,18 +40,28 @@ public class RedisServer {
 
     public RedisServer(ServerConfig config) {
         this.config = config;
+        this.password = Password.of(config.password);
         this.threadPool = (config.maxThreads <= 0)
                 ? Executors.newCachedThreadPool()
                 : Executors.newFixedThreadPool(config.maxThreads);
     }
 
+    /**
+     * Runs the server on the calling thread until {@link #stop()}.
+     *
+     * <p>Returns normally only when stop() ended it. If the server cannot start, or stops
+     * accepting connections on its own, this throws instead, so that {@link #main} exits
+     * non-zero and whatever is supervising the process can tell a failure from a shutdown.
+     */
     public void start() {
         if (config.aofEnabled) {
             try {
                 aofManager = new AofManager(config.aofPath, writer, config.fsyncPolicy);
             } catch (IOException e) {
-                LOG.log(Level.SEVERE, "Failed to initialize AOF manager", e);
-                return; // Cannot start server without AOF if required
+                // Serving without the log that was asked for would acknowledge writes that
+                // a restart then loses.
+                stop();
+                throw new IllegalStateException("Could not open AOF file " + config.aofPath, e);
             }
         } else {
             LOG.info("AOF disabled");
@@ -81,10 +92,29 @@ public class RedisServer {
         try {
             this.serverSocket = new ServerSocket();
             serverSocket.setReuseAddress(true); // allow immediate reuse
-            serverSocket.bind(new InetSocketAddress(config.port));
+            // Port alone would mean every interface. Taking the address from config is what
+            // keeps the default reachable from this machine only.
+            serverSocket.bind(new InetSocketAddress(InetAddress.getByName(config.bind), config.port));
+        } catch (IOException e) {
+            // A busy port, or an address this machine doesn't have. Returning here used to
+            // let main() exit 0, which a supervisor or a script waiting on the process reads
+            // as a clean shutdown.
+            stop();
+            throw new IllegalStateException("Could not listen on " + config.bind + ":" + config.port, e);
+        }
 
-            LOG.info(() -> "Redis server listening on port " + config.port);
+        // Scripts wait for "listening on port" to know the server is up; keep that wording.
+        LOG.info(() -> "Redis server listening on port " + serverSocket.getLocalPort()
+                + " (bind " + serverSocket.getInetAddress().getHostAddress() + ")");
+        if (!password.isSet() && !serverSocket.getInetAddress().isLoopbackAddress()) {
+            // Redis refuses outside clients outright in this state ("protected mode"). This
+            // only warns, but the loopback default keeps a fresh install out of it.
+            LOG.warning(() -> "No REDIS_PASSWORD is set and other machines can connect (bind "
+                    + serverSocket.getInetAddress().getHostAddress()
+                    + "). Anyone who can reach this port can read and change every key.");
+        }
 
+        try {
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
@@ -95,18 +125,30 @@ public class RedisServer {
                     LOG.info(() -> "New client connected: " + clientSocket.getRemoteSocketAddress());
                     // execute, not submit: submit parks anything the handler throws in a
                     // Future nobody reads, so a thread dying on an Error leaves no trace.
-                    threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub,
-                            config.timeoutSeconds, connectedClients::decrementAndGet));
-                } catch (SocketException e) {
-                    if (running) {
-                        LOG.log(Level.WARNING, "Socket error", e);
+                    try {
+                        threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub,
+                                config.timeoutSeconds, connectedClients::decrementAndGet, password));
+                    } catch (RejectedExecutionException e) {
+                        // The pool refuses work only once stop() has shut it down, and that can
+                        // land between accept() returning and this call. Checking `running`
+                        // first would not close the gap. It is a requested stop, like the
+                        // SocketException below, so drop the client and leave normally.
+                        connectedClients.decrementAndGet();
+                        closeQuietly(clientSocket);
+                        break;
                     }
-                    break;
+                } catch (SocketException e) {
+                    if (!running) {
+                        break; // stop() closed the socket to end accept(): the normal way out
+                    }
+                    throw e;
                 }
             }
 
         } catch (IOException e) {
-            LOG.log(Level.SEVERE, "Server startup failure", e);
+            // Still meant to be running, so the server stopped serving on its own.
+            throw new IllegalStateException(
+                    "Stopped accepting connections on " + config.bind + ":" + config.port, e);
         } finally {
             stop();
         }
@@ -134,6 +176,14 @@ public class RedisServer {
             // The client is being dropped either way.
         }
         return false;
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // The server is going away either way.
+        }
     }
 
     /** Live connections, for tests and for the admission check. */
@@ -185,7 +235,14 @@ public class RedisServer {
     }
 
     public static void main(String[] args) {
-        RedisServer server = new RedisServer();
-        server.start();
+        try {
+            new RedisServer().start();
+        } catch (RuntimeException e) {
+            // start() returns normally only after stop(), so anything thrown means the server
+            // could not serve. Falling off the end of main would exit 0 and look like a clean
+            // stop; the exit code is how a supervisor, a script or a test harness finds out.
+            LOG.log(Level.SEVERE, "Server failed", e);
+            System.exit(1);
+        }
     }
 }

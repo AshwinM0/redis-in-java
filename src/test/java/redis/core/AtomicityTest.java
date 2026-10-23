@@ -2,7 +2,6 @@ package redis.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -185,7 +184,7 @@ class AtomicityTest {
         void incrByRejectsAHashKey() {
             db.hset("h", "f", "v");
             CommandException e = assertThrows(CommandException.class, () -> db.incrBy("h", 1));
-            assertTrue(e.getMessage().startsWith("WRONGTYPE"));
+            assertEquals("WRONGTYPE", e.code());
         }
 
         @Test

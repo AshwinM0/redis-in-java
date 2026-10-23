@@ -25,7 +25,7 @@ public class IncrByFloatCommand implements Command {
         try {
             writer.writeBulk(out, db.incrByFloat(key, incrementStr));
         } catch (CommandException e) {
-            writer.writeError(out, e.getMessage());
+            writer.writeError(out, e.code(), e.getMessage());
         }
     }
 

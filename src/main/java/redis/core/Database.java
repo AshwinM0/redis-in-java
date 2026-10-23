@@ -20,8 +20,9 @@ public class Database {
 
     private static final Logger LOG = Logger.getLogger(Database.class.getName());
 
-    public static final String WRONG_TYPE =
-            "WRONGTYPE Operation against a key holding the wrong kind of value";
+    /** Error code and text for a command run against a key of the other type. */
+    public static final String WRONG_TYPE_CODE = "WRONGTYPE";
+    public static final String WRONG_TYPE = "Operation against a key holding the wrong kind of value";
     private static final String NOT_AN_INTEGER = "value is not an integer or out of range";
     private static final String NOT_A_FLOAT = "value is not a valid float";
     private static final String OVERFLOW = "increment or decrement would overflow";
@@ -415,7 +416,7 @@ public class Database {
     private void requireNotHash(String key) {
         reapIfExpired(key);
         if (hashStore.containsKey(key)) {
-            throw new CommandException(WRONG_TYPE);
+            throw new CommandException(WRONG_TYPE_CODE, WRONG_TYPE);
         }
     }
 

@@ -187,8 +187,7 @@ class ClientHandlerTest {
             out.flush();
 
             String line = in.readLine();
-            assertTrue(line.startsWith("-ERR"));
-            assertTrue(line.contains("WRONGTYPE"));
+            assertTrue(line.startsWith("-WRONGTYPE "), "WRONGTYPE must be the error code: " + line);
         }
     }
 
