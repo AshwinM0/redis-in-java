@@ -30,13 +30,25 @@ public class ClientHandler implements Runnable {
 
     private static final int BUFFER_SIZE = 16 * 1024;
 
+    /**
+     * What a connection may send before it authenticates: one flat command of at most ten
+     * arguments, none over 16 KB. These are Redis's numbers (CVE-2021-32675). AUTH needs at
+     * most three short arguments, so legitimate clients never come near them.
+     *
+     * <p>Flat matters as much as the numbers. Per-array caps multiply across nesting levels,
+     * so without a depth limit ten elements of ten elements, 32 levels deep, would bound
+     * nothing.
+     */
+    private static final RespParser.Limits BEFORE_AUTH =
+            new RespParser.Limits(1, 10, 16 * 1024, 16 * 1024);
+
     private final Socket client;
     private final Database db;
     private final PubSubManager pubsub;
     private final RespWriter writer = new RespWriter();
     private final CommandProcessor commandProcessor;
     private final int idleTimeoutSeconds;
-    private final Runnable onClose;
+    private final Admission.Ticket ticket;
     private final Password password;
     private OutputStream out; // Stored as field for cleanup access
 
@@ -47,18 +59,17 @@ public class ClientHandler implements Runnable {
     private boolean authenticated;
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub) {
-        this(client, sharedDB, commandProcessor, pubsub, 0, () -> {
-        }, Password.NONE);
+        this(client, sharedDB, commandProcessor, pubsub, 0, Admission.Ticket.UNTRACKED, Password.NONE);
     }
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
-            int idleTimeoutSeconds, Runnable onClose, Password password) {
+            int idleTimeoutSeconds, Admission.Ticket ticket, Password password) {
         this.client = client;
         this.db = sharedDB;
         this.pubsub = pubsub;
         this.commandProcessor = commandProcessor;
         this.idleTimeoutSeconds = idleTimeoutSeconds;
-        this.onClose = onClose;
+        this.ticket = ticket;
         this.password = password;
         this.authenticated = !password.isSet();
     }
@@ -124,6 +135,11 @@ public class ClientHandler implements Runnable {
             writeGuarded("WRONGPASS", "invalid username-password pair or user is disabled.");
             return;
         }
+        // The deadline or an eviction may have claimed this connection a moment ago. Its
+        // socket is then being closed, and replying OK would tell the client it got in.
+        if (!ticket.authenticated()) {
+            return;
+        }
         authenticated = true;
         synchronized (pubsub.lockFor(out)) {
             writer.writeSimple(out, "OK");
@@ -141,7 +157,12 @@ public class ClientHandler implements Runnable {
             while (true) {
                 try {
                     // Parse next RESP message
-                    Value request = RespParser.readValue(in);
+                    // The NOAUTH check below only sees a request once it has been read in
+                    // full, so until AUTH succeeds the reading itself has to be bounded.
+                    // Chosen per request, so a command pipelined right behind a successful
+                    // AUTH gets the full limits.
+                    Value request = RespParser.readValue(in,
+                            authenticated ? RespParser.Limits.DEFAULT : BEFORE_AUTH);
                     if (request == null) {
                         LOG.info(() -> "Client disconnected: " + client.getRemoteSocketAddress());
                         break;
@@ -240,7 +261,7 @@ public class ClientHandler implements Runnable {
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to initialize client handler for " + client.getRemoteSocketAddress(), e);
         } finally {
-            onClose.run();
+            ticket.release();
             if (out != null) {
                 pubsub.unsubscribeAll(out); // Clean up subscriptions
                 try {

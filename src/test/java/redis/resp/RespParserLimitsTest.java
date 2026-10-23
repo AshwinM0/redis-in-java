@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -98,6 +99,76 @@ class RespParserLimitsTest {
         assertEquals(3, v.array.size());
         assertEquals("SET", v.array.get(0).str);
         assertEquals("value", v.array.get(2).str);
+    }
+
+    /**
+     * A caller can hold a read to tighter limits, as ClientHandler does before AUTH. Each
+     * limit has to be enforced at the header: what would arrive after it is exactly the cost
+     * the limit exists to avoid.
+     */
+    @Nested
+    @DisplayName("Caller-chosen limits")
+    class CallerChosenLimits {
+
+        // Small numbers keep the cases readable. ClientHandler's are 1, 10, 16 KB and 16 KB.
+        private final RespParser.Limits tight = new RespParser.Limits(1, 3, 16, 16);
+
+        /** A stream whose available() afterwards shows how far the parser read. */
+        private ByteArrayInputStream stream(String s) {
+            return new ByteArrayInputStream(s.getBytes(Protocol.WIRE));
+        }
+
+        @Test
+        @DisplayName("A bulk header over the limit is refused before its payload is read")
+        void bulkLengthIsCheckedAtTheHeader() {
+            String payload = "x".repeat(17) + "\r\n";
+            ByteArrayInputStream in = stream("*1\r\n$17\r\n" + payload);
+
+            RespParseException e = assertThrows(RespParseException.class, () -> RespParser.readValue(in, tight));
+
+            assertEquals("bulk length 17 exceeds 16", e.getMessage());
+            assertEquals(payload.length(), in.available(), "the payload was read before its length was checked");
+        }
+
+        @Test
+        @DisplayName("An array header over the limit is refused before its elements are read")
+        void elementCountIsCheckedAtTheHeader() {
+            String elements = "$1\r\na\r\n".repeat(4);
+            ByteArrayInputStream in = stream("*4\r\n" + elements);
+
+            RespParseException e = assertThrows(RespParseException.class, () -> RespParser.readValue(in, tight));
+
+            assertEquals("multibulk length 4 exceeds 3", e.getMessage());
+            assertEquals(elements.length(), in.available(), "elements were read before the count was checked");
+        }
+
+        @Test
+        @DisplayName("Depth 1 allows a flat command and refuses an array inside it")
+        void depthOneMeansFlat() {
+            RespParseException e = assertThrows(RespParseException.class,
+                    () -> RespParser.readValue(stream("*1\r\n*1\r\n$1\r\nx\r\n"), tight));
+
+            assertTrue(e.getMessage().contains("nesting depth"), e.getMessage());
+        }
+
+        @Test
+        void longLinesAreRefused() {
+            RespParseException e = assertThrows(RespParseException.class,
+                    () -> RespParser.readValue(stream("+" + "x".repeat(17) + "\r\n"), tight));
+
+            assertTrue(e.getMessage().contains("line exceeds 16"), e.getMessage());
+        }
+
+        @Test
+        @DisplayName("A request at the limits still parses")
+        void atTheLimitsIsFine() throws Exception {
+            String sixteen = "p".repeat(16);
+            Value v = RespParser.readValue(
+                    stream("*3\r\n$4\r\nAUTH\r\n$7\r\ndefault\r\n$16\r\n" + sixteen + "\r\n"), tight);
+
+            assertEquals(3, v.array.size());
+            assertEquals(sixteen, v.array.get(2).str);
+        }
     }
 
     private static long usedHeap() {

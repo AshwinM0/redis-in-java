@@ -46,7 +46,7 @@ graph TD
 ### Key Components
 
 *   **Networking Layer**: `ServerSocket` with a thread per connection (blocking I/O). Concurrency lives here: parsing and socket waits for different clients overlap freely. Connections are capped by `REDIS_MAX_CLIENTS`, since each one holds a thread for as long as it stays open.
-*   **Access Control**: Listens on `127.0.0.1` unless `REDIS_BIND` says otherwise, so a fresh install accepts connections from its own machine only. Setting `REDIS_PASSWORD` turns on `AUTH`: until a connection authenticates, every command except `AUTH` and `QUIT` is refused with `-NOAUTH`. Passwords are compared as SHA-256 digests in constant time. Traffic is not encrypted, so a server reachable over an untrusted network still needs a private network or a TLS tunnel in front of it.
+*   **Access Control**: Listens on `127.0.0.1` unless `REDIS_BIND` says otherwise, so a fresh install accepts connections from its own machine only. Setting `REDIS_PASSWORD` turns on `AUTH`: until a connection authenticates, every command except `AUTH` and `QUIT` is refused with `-NOAUTH`, and the parser holds it to small requests (a flat command of at most 10 arguments, each up to 16 KB, Redis's limits), so a stranger cannot make the server buffer large payloads. Connections that have not authenticated also share a small budget (`REDIS_MAX_UNAUTHENTICATED`) and get a deadline counted from connecting (`REDIS_AUTH_TIMEOUT`); when the budget is full, a newcomer evicts the oldest. Idle strangers can therefore neither pile up threads nor lock out the clients that do authenticate. Passwords are compared as SHA-256 digests in constant time. Traffic is not encrypted, so a server reachable over an untrusted network still needs a private network or a TLS tunnel in front of it.
 *   **Protocol Handler**: Custom, zero-dependency RESP parser/writer. Binary-safe — bulk-string lengths are counted in bytes, so any payload survives a `SET`/`GET` round trip unchanged. Nesting depth, element counts and line lengths are all bounded, so a small malicious frame cannot cost the server unbounded memory or stack.
 *   **Storage Engine**: An in-memory database whose methods are individually synchronised, so **commands execute one at a time**. This mirrors Redis, which is also single-threaded for command execution: a read-modify-write like `INCR` is indivisible by construction, and there is no lock-ordering surface to get wrong. It does mean throughput does not scale with cores.
 *   **Expiry**: Lazy reclamation on access, plus a background cycle that samples keys with TTLs and keeps sampling while a pass finds many expired. Every read path goes through a single expiry gate, so a key that has lapsed is invisible to `GET`, `TYPE`, `EXISTS` and the hash commands alike.
@@ -129,6 +129,11 @@ REDIS_BIND=127.0.0.1
 # Use a long random value: AUTH is cheap, so a short password can be brute-forced.
 # REDIS_PASSWORD=change-me-to-a-long-random-value
 
+# With a password: how many connections may be open without having authenticated
+# (past it, a new connection evicts the oldest), and how many seconds each gets.
+REDIS_MAX_UNAUTHENTICATED=128
+REDIS_AUTH_TIMEOUT=10
+
 # Threading (0 = cached/unlimited)
 REDIS_MAX_THREADS=0
 
@@ -150,7 +155,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-320 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, and connection lifecycle over real sockets.
+342 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, and connection lifecycle over real sockets.
 
 ```bash
 mvn test

@@ -24,6 +24,20 @@ public class ServerConfig {
          * nothing but AUTH or QUIT until it authenticates.
          */
         public final String password;
+
+        /**
+         * How many connections may be open at once without having authenticated. However
+         * many a stranger opens, they hold at most this many threads: past it, a new
+         * connection evicts the oldest unauthenticated one. Applies only with a password.
+         */
+        public final int maxUnauthenticated;
+
+        /**
+         * Seconds a connection has to authenticate, counted from when it connected; 0 for no
+         * deadline. Applies only with a password.
+         */
+        public final int authTimeoutSeconds;
+
         public final boolean aofEnabled;
         public final Path aofPath;
         public final FsyncPolicy fsyncPolicy;
@@ -74,9 +88,27 @@ public class ServerConfig {
                         int maxClients,
                         String bind,
                         String password) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, timeoutSeconds, maxClients,
+                                bind, password, 128, 10);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients,
+                        String bind,
+                        String password,
+                        int maxUnauthenticated,
+                        int authTimeoutSeconds) {
                 this.port = port;
                 this.bind = bind;
                 this.password = password;
+                this.maxUnauthenticated = maxUnauthenticated;
+                this.authTimeoutSeconds = authTimeoutSeconds;
                 this.aofEnabled = aofEnabled;
                 this.aofPath = aofPath;
                 this.fsyncPolicy = fsyncPolicy;
@@ -112,6 +144,12 @@ public class ServerConfig {
                 // env() treats an empty value as unset, so REDIS_PASSWORD= means no password.
                 String password = env("REDIS_PASSWORD", null);
 
+                int maxUnauthenticated = Integer.parseInt(
+                                env("REDIS_MAX_UNAUTHENTICATED", "128"));
+
+                int authTimeoutSeconds = Integer.parseInt(
+                                env("REDIS_AUTH_TIMEOUT", "10"));
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
@@ -121,7 +159,9 @@ public class ServerConfig {
                                 timeoutSeconds,
                                 maxClients,
                                 bind,
-                                password);
+                                password,
+                                maxUnauthenticated,
+                                authTimeoutSeconds);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

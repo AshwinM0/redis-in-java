@@ -10,6 +10,7 @@ import redis.core.Database;
 import redis.persistence.AofManager;
 import redis.pubsub.PubSubManager;
 import redis.resp.RespWriter;
+import redis.time.SystemClock;
 
 import java.net.*;
 import java.util.concurrent.*;
@@ -27,8 +28,8 @@ public class RedisServer {
     private ServerSocket serverSocket;
     private volatile boolean running = true;
     private volatile boolean stopped = false;
-    private final java.util.concurrent.atomic.AtomicInteger connectedClients =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private final Admission admission;
+    private volatile ScheduledExecutorService deadlineSweeper; // only with a password and a deadline
 
     private final RespWriter writer = new RespWriter();;
     private AofManager aofManager;
@@ -41,6 +42,8 @@ public class RedisServer {
     public RedisServer(ServerConfig config) {
         this.config = config;
         this.password = Password.of(config.password);
+        this.admission = new Admission(config.maxClients, config.maxUnauthenticated,
+                config.authTimeoutSeconds, password.isSet(), new SystemClock());
         this.threadPool = (config.maxThreads <= 0)
                 ? Executors.newCachedThreadPool()
                 : Executors.newFixedThreadPool(config.maxThreads);
@@ -114,11 +117,24 @@ public class RedisServer {
                     + "). Anyone who can reach this port can read and change every key.");
         }
 
+        if (password.isSet() && config.authTimeoutSeconds > 0) {
+            deadlineSweeper = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "auth-deadlines");
+                t.setDaemon(true);
+                return t;
+            });
+            // Once a second, so a deadline holds to within a second. A connection that is
+            // blocked reading cannot notice its own deadline; this thread closes its socket.
+            deadlineSweeper.scheduleAtFixedRate(this::expireOverdue, 1, 1, TimeUnit.SECONDS);
+        }
+
         try {
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
-                    if (!admit(clientSocket)) {
+                    Admission.Ticket ticket = admission.admit(clientSocket);
+                    if (ticket == null) {
+                        refuse(clientSocket);
                         continue;
                     }
 
@@ -127,13 +143,13 @@ public class RedisServer {
                     // Future nobody reads, so a thread dying on an Error leaves no trace.
                     try {
                         threadPool.execute(new ClientHandler(clientSocket, db, commandProcessor, pubsub,
-                                config.timeoutSeconds, connectedClients::decrementAndGet, password));
+                                config.timeoutSeconds, ticket, password));
                     } catch (RejectedExecutionException e) {
                         // The pool refuses work only once stop() has shut it down, and that can
                         // land between accept() returning and this call. Checking `running`
                         // first would not close the gap. It is a requested stop, like the
                         // SocketException below, so drop the client and leave normally.
-                        connectedClients.decrementAndGet();
+                        ticket.release();
                         closeQuietly(clientSocket);
                         break;
                     }
@@ -155,18 +171,14 @@ public class RedisServer {
     }
 
     /**
-     * Takes a connection slot, or turns the client away.
+     * Turns away a client that arrived with the server at {@code maxClients}.
      *
      * <p>Each client occupies a thread for as long as it stays connected, so the count of
      * live connections is the real resource. Refusing past the ceiling costs one error
      * reply; accepting without one trades an unbounded number of threads for an
      * out-of-memory that takes the whole server with it.
      */
-    private boolean admit(Socket clientSocket) {
-        if (connectedClients.incrementAndGet() <= config.maxClients) {
-            return true;
-        }
-        connectedClients.decrementAndGet();
+    private void refuse(Socket clientSocket) {
         LOG.warning(() -> "Refusing client, at limit of " + config.maxClients + ": "
                 + clientSocket.getRemoteSocketAddress());
         try (Socket refused = clientSocket) {
@@ -175,7 +187,16 @@ public class RedisServer {
         } catch (IOException ignored) {
             // The client is being dropped either way.
         }
-        return false;
+    }
+
+    private void expireOverdue() {
+        // scheduleAtFixedRate cancels a task for good, and silently, the first time it
+        // throws. Catching here keeps deadlines enforced for the life of the server.
+        try {
+            admission.expireOverdue();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Closing connections past their AUTH deadline failed", e);
+        }
     }
 
     private static void closeQuietly(Socket socket) {
@@ -186,9 +207,9 @@ public class RedisServer {
         }
     }
 
-    /** Live connections, for tests and for the admission check. */
+    /** Live connections, for tests. */
     public int connectedClients() {
-        return connectedClients.get();
+        return admission.connected();
     }
 
     public void stop() {
@@ -206,6 +227,10 @@ public class RedisServer {
             }
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Error closing server socket", e);
+        }
+
+        if (deadlineSweeper != null) {
+            deadlineSweeper.shutdownNow();
         }
 
         threadPool.shutdown();

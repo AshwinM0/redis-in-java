@@ -108,6 +108,7 @@ def start_server(jar, port, aof_path):
     env.update({
         "REDIS_PORT": str(port),
         "REDIS_PASSWORD": PASSWORD,
+        "REDIS_AUTH_TIMEOUT": "1",
         "REDIS_AOF_ENABLED": "true",
         "REDIS_AOF_PATH": aof_path,
         # ALWAYS means every append is fsynced, so the hard kill below must not
@@ -163,6 +164,19 @@ def first_boot(port):
     check("wrong password refused", c.call("AUTH", "guess"),
           ("-", b"WRONGPASS invalid username-password pair or user is disabled."))
     check("AUTH default <password>", c.call("AUTH", "default", PASSWORD), ("+", b"OK"))
+
+    # Before AUTH, a request announcing 512 MB is refused at its header, so a stranger
+    # cannot make the server buffer it. Only the header is sent, as in the attack.
+    stranger = Resp("127.0.0.1", port)
+    stranger.sock.sendall(b"*1\r\n$536870912\r\n")
+    check("oversized request before AUTH refused at its header", stranger.read(),
+          ("-", b"ERR Protocol error: bulk length 536870912 exceeds 16384"))
+    check("and that connection is closed", stranger.at_eof(), True)
+    stranger.close()
+
+    idle = Resp("127.0.0.1", port)
+    check("a connection that never authenticates is closed at its deadline", idle.at_eof(), True)
+    idle.close()
 
     print("protocol")
     check("PING", c.call("PING"), ("+", b"PONG"))

@@ -146,6 +146,60 @@ class AuthTest {
             assertEquals("v", c.readLine());
         }
 
+        /**
+         * The CVE-2021-32675 shape: a header announcing 512 MB. Only the header is sent: a
+         * server that waited for the payload before checking would leave this read hanging.
+         * (Sending the payload too would make the test flaky the other way: closing a socket
+         * with unread input sends a reset, which can discard the reply before it is read.)
+         */
+        @Test
+        @DisplayName("Before AUTH, an oversized request is refused at its header and the connection closed")
+        void oversizedRequestBeforeAuth() throws Exception {
+            Client c = connect();
+
+            c.write("*1\r\n$536870912\r\n".getBytes(StandardCharsets.US_ASCII));
+
+            assertEquals("-ERR Protocol error: bulk length 536870912 exceeds 16384", c.readLine());
+            assertNull(c.readLine(), "the connection should close: the stream can't be trusted past a refused header");
+        }
+
+        @Test
+        @DisplayName("Once authenticated, the same connection can send large values")
+        void limitsLiftOnceAuthenticated() throws Exception {
+            Client c = connect();
+            String big = "v".repeat(64 * 1024);
+
+            assertEquals("+OK", c.call("AUTH", PASSWORD));
+            assertEquals("+OK", c.call("SET", "big", big));
+            assertEquals("$" + big.length(), c.call("GET", "big"));
+            assertEquals(big, c.readLine());
+        }
+
+        @Test
+        @DisplayName("A large command pipelined right behind AUTH gets the full limits")
+        void largeCommandPipelinedBehindAuth() throws Exception {
+            Client c = connect();
+
+            c.write(frame("AUTH", PASSWORD), frame("SET", "big", "v".repeat(20 * 1024)));
+
+            assertEquals("+OK", c.readLine());
+            assertEquals("+OK", c.readLine());
+        }
+
+        @Test
+        @DisplayName("After a failed AUTH the limits still apply")
+        void failedAuthKeepsTheLimits() throws Exception {
+            Client c = connect();
+
+            // Header only, for the reason given on oversizedRequestBeforeAuth.
+            c.write(frame("AUTH", "guess"),
+                    "*3\r\n$3\r\nSET\r\n$3\r\nbig\r\n$20480\r\n".getBytes(StandardCharsets.US_ASCII));
+
+            assertEquals(WRONGPASS, c.readLine());
+            assertEquals("-ERR Protocol error: bulk length 20480 exceeds 16384", c.readLine());
+            assertNull(c.readLine());
+        }
+
         @Test
         @DisplayName("Authenticating one connection does not authenticate another")
         void authIsPerConnection() throws Exception {
