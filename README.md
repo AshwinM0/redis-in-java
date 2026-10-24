@@ -178,7 +178,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-396 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, TLS, Pub/Sub with stuck subscribers, and connection lifecycle over real sockets.
+400 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, TLS, Pub/Sub with stuck subscribers, and connection lifecycle over real sockets.
 
 ```bash
 mvn test

@@ -1,7 +1,7 @@
 package redis.utils;
 
 /**
- * Redis glob-style pattern matching, as used by KEYS.
+ * Redis glob-style pattern matching, as used by KEYS, PSUBSCRIBE and PUBSUB CHANNELS.
  *
  * <p>Supports {@code *} (any run of characters), {@code ?} (exactly one), {@code [...]}
  * character classes with ranges and {@code ^} negation, and {@code \} escapes. Every other
@@ -9,18 +9,35 @@ package redis.utils;
  * meaning and cannot throw.
  *
  * <p>The semantics follow Redis's {@code stringmatchlen}, including its tolerance of an
- * unterminated character class.
+ * unterminated character class, and its defences against abusive patterns
+ * (CVE-2022-36021): time linear in the pattern times the text, and a cap on nesting.
  */
 public final class GlobMatcher {
+
+    /**
+     * How deeply stars may nest before the match counts as failed, as in Redis. Each star
+     * recurses once, and a stack overflow would be an Error, which a connection's handler
+     * does not catch.
+     */
+    private static final int MAX_NESTING = 1000;
 
     private GlobMatcher() {
     }
 
     public static boolean matches(String pattern, String text) {
-        return match(pattern, 0, text, 0);
+        return match(pattern, 0, text, 0, new boolean[1], 0);
     }
 
-    private static boolean match(String p, int pi, String s, int si) {
+    /**
+     * @param skipLongerMatches set once a star has tried the rest of the pattern at every
+     *                          remaining position of the text and failed; from then on the
+     *                          whole match has failed. An array, as a flag shared by every
+     *                          level of the recursion.
+     */
+    private static boolean match(String p, int pi, String s, int si, boolean[] skipLongerMatches, int nesting) {
+        if (nesting > MAX_NESTING) {
+            return false;
+        }
         while (pi < p.length()) {
             switch (p.charAt(pi)) {
                 case '*':
@@ -31,10 +48,19 @@ public final class GlobMatcher {
                         return true; // trailing star swallows the rest
                     }
                     for (int split = si; split <= s.length(); split++) {
-                        if (match(p, pi + 1, s, split)) {
+                        if (match(p, pi + 1, s, split, skipLongerMatches, nesting + 1)) {
                             return true;
                         }
+                        if (skipLongerMatches[0]) {
+                            return false;
+                        }
                     }
+                    // The rest of the pattern matches nowhere in the rest of the text. An
+                    // earlier star taking a longer split would only make the rest start
+                    // later still: what lies between two stars has a fixed length. So no
+                    // earlier star needs to try again. Without this, every way of sharing
+                    // the text among the stars was tried, exponentially many.
+                    skipLongerMatches[0] = true;
                     return false;
 
                 case '?':
