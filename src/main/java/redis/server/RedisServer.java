@@ -28,7 +28,7 @@ public class RedisServer {
     private final Password password;
     private final ExecutorService threadPool;
     private final Database db = new Database();
-    private final PubSubManager pubsub = new PubSubManager();
+    private final PubSubManager pubsub;
 
     private final List<ServerSocket> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean running = true;
@@ -50,6 +50,7 @@ public class RedisServer {
     public RedisServer(ServerConfig config) {
         this.config = config;
         this.password = Password.of(config.password);
+        this.pubsub = new PubSubManager(config.pubsubOutputLimitBytes);
         this.admission = new Admission(config.maxClients, config.maxUnauthenticated,
                 config.authTimeoutSeconds, password.isSet(), new SystemClock());
         this.threadPool = (config.maxThreads <= 0)
@@ -253,7 +254,7 @@ public class RedisServer {
             return;
         }
         new ClientHandler(socket, db, commandProcessor, pubsub, config.timeoutSeconds,
-                config.maxConnectionAgeSeconds, ticket, password).run();
+                config.maxConnectionAgeSeconds, ticket, password, accepted).run();
     }
 
     /**

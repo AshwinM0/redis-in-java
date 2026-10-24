@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 import redis.persistence.AofManager.FsyncPolicy;
+import redis.pubsub.PubSubManager;
 
 public class ServerConfig {
 
@@ -61,6 +62,13 @@ public class ServerConfig {
          * a client whose password or certificate has been revoked keeps the access it had.
          */
         public final int maxConnectionAgeSeconds;
+
+        /**
+         * How many bytes of messages may wait for one subscriber before it is disconnected; 0
+         * for no limit. Publishers never wait on a subscriber, so one that stops reading
+         * builds a queue instead, and this is how large the queue may grow.
+         */
+        public final long pubsubOutputLimitBytes;
 
         public final boolean aofEnabled;
         public final Path aofPath;
@@ -163,8 +171,29 @@ public class ServerConfig {
                         int authTimeoutSeconds,
                         TlsSettings tls,
                         int maxConnectionAgeSeconds) {
+                this(port, aofEnabled, aofPath, fsyncPolicy, maxThreads, timeoutSeconds, maxClients,
+                                bind, password, maxUnauthenticated, authTimeoutSeconds, tls, maxConnectionAgeSeconds,
+                                PubSubManager.DEFAULT_OUTPUT_LIMIT_BYTES);
+        }
+
+        public ServerConfig(
+                        int port,
+                        boolean aofEnabled,
+                        Path aofPath,
+                        FsyncPolicy fsyncPolicy,
+                        int maxThreads,
+                        int timeoutSeconds,
+                        int maxClients,
+                        String bind,
+                        String password,
+                        int maxUnauthenticated,
+                        int authTimeoutSeconds,
+                        TlsSettings tls,
+                        int maxConnectionAgeSeconds,
+                        long pubsubOutputLimitBytes) {
                 this.tls = tls;
                 this.maxConnectionAgeSeconds = maxConnectionAgeSeconds;
+                this.pubsubOutputLimitBytes = pubsubOutputLimitBytes;
                 this.port = port;
                 this.bind = bind;
                 this.password = password;
@@ -228,6 +257,10 @@ public class ServerConfig {
                 int maxConnectionAgeSeconds = Integer.parseInt(
                                 env("REDIS_MAX_CONNECTION_AGE", "0"));
 
+                long pubsubOutputLimitBytes = Long.parseLong(env("REDIS_PUBSUB_OUTPUT_LIMIT_MB",
+                                Long.toString(PubSubManager.DEFAULT_OUTPUT_LIMIT_BYTES / (1024 * 1024))))
+                                * 1024 * 1024;
+
                 return new ServerConfig(
                                 port,
                                 aofEnabled,
@@ -241,7 +274,8 @@ public class ServerConfig {
                                 maxUnauthenticated,
                                 authTimeoutSeconds,
                                 tls,
-                                maxConnectionAgeSeconds);
+                                maxConnectionAgeSeconds,
+                                pubsubOutputLimitBytes);
         }
 
         private static final java.util.Map<String, String> dotenv = new java.util.HashMap<>();

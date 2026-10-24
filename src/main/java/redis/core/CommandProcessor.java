@@ -32,7 +32,10 @@ import redis.commands.IncrCommand;
 import redis.commands.KeysCommand;
 import redis.commands.MGetCommand;
 import redis.commands.MSetCommand;
+import redis.commands.PSubscribeCommand;
+import redis.commands.PUnsubscribeCommand;
 import redis.commands.PingCommand;
+import redis.commands.PubSubCommand;
 import redis.commands.PublishCommand;
 import redis.commands.QuitCommand;
 import redis.commands.SetCommand;
@@ -166,7 +169,10 @@ public class CommandProcessor {
 
         commands.put("SUBSCRIBE", new SubscribeCommand(pubsub));
         commands.put("UNSUBSCRIBE", new UnsubscribeCommand(pubsub));
+        commands.put("PSUBSCRIBE", new PSubscribeCommand(pubsub));
+        commands.put("PUNSUBSCRIBE", new PUnsubscribeCommand(pubsub));
         commands.put("PUBLISH", new PublishCommand(pubsub));
+        commands.put("PUBSUB", new PubSubCommand(pubsub));
         // Add others...
     }
 

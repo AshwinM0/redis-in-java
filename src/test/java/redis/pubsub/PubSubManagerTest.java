@@ -19,7 +19,9 @@ public class PubSubManagerTest {
 
     @BeforeEach
     void beforeEach() {
-        pubsub = new PubSubManager();
+        // Writers run on the publishing thread, so a message is in the stream by the time
+        // publish() returns and the tests can read it straight away.
+        pubsub = new PubSubManager(PubSubManager.DEFAULT_OUTPUT_LIMIT_BYTES, Runnable::run);
         output1 = new ByteArrayOutputStream();
         output2 = new ByteArrayOutputStream();
         output3 = new ByteArrayOutputStream();

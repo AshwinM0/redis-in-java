@@ -49,6 +49,11 @@ public class ClientHandler implements Runnable {
             new RespParser.Limits(1, 10, 16 * 1024, 16 * 1024);
 
     private final Socket client;
+    /**
+     * The TCP socket: {@link #client} itself, or the one beneath it under TLS. Closing this
+     * never blocks, which is what Pub/Sub needs to cut off a subscriber stuck mid-write.
+     */
+    private final Socket transport;
     private final Database db;
     private final PubSubManager pubsub;
     private final RespWriter writer = new RespWriter();
@@ -74,7 +79,15 @@ public class ClientHandler implements Runnable {
 
     public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
             int idleTimeoutSeconds, int maxAgeSeconds, Admission.Ticket ticket, Password password) {
+        this(client, sharedDB, commandProcessor, pubsub, idleTimeoutSeconds, maxAgeSeconds, ticket, password, client);
+    }
+
+    /** @param transport the TCP socket beneath {@code client}, when that is a TLS socket */
+    public ClientHandler(Socket client, Database sharedDB, CommandProcessor commandProcessor, PubSubManager pubsub,
+            int idleTimeoutSeconds, int maxAgeSeconds, Admission.Ticket ticket, Password password,
+            Socket transport) {
         this.client = client;
+        this.transport = transport;
         this.db = sharedDB;
         this.pubsub = pubsub;
         this.commandProcessor = commandProcessor;
@@ -141,7 +154,9 @@ public class ClientHandler implements Runnable {
      * Web servers call this a lingering close.
      */
     private void lingeringClose(InputStream in) {
-        pubsub.unsubscribeAll(out); // a closing connection should not be sent new messages
+        // A closing connection should not be sent new messages. This also tells Pub/Sub
+        // that a write failing from here on is this close, not a reason to cut it off.
+        pubsub.closing(out);
         try {
             client.shutdownOutput();
             client.setSoTimeout(LINGER_MILLIS);
@@ -216,6 +231,7 @@ public class ClientHandler implements Runnable {
     public void run() {
         try (InputStream in = new BufferedInputStream(client.getInputStream(), BUFFER_SIZE)) {
             out = new BufferedOutputStream(client.getOutputStream(), BUFFER_SIZE);
+            pubsub.connect(out, transport);
             while (true) {
                 try {
                     // Past its maximum age, a connection closes here, between commands: the
@@ -346,7 +362,7 @@ public class ClientHandler implements Runnable {
         } finally {
             ticket.release();
             if (out != null) {
-                pubsub.unsubscribeAll(out); // Clean up subscriptions
+                pubsub.disconnected(out); // Clean up subscriptions
                 try {
                     out.close();
                 } catch (IOException ignored) {

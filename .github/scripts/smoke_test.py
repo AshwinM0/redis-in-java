@@ -261,6 +261,18 @@ def first_boot(port, server_cert):
     check("an unterminated class does not error", c.call("KEYS", "[unclosed")[0], "*")
     check("stream still alive after odd patterns", c.call("PING"), ("+", b"PONG"))
 
+    print("Pub/Sub patterns")
+    sub = Resp("127.0.0.1", port)
+    sub.call("AUTH", PASSWORD)
+    check("PSUBSCRIBE confirms the pattern", sub.call("PSUBSCRIBE", "news.*"),
+          ("*", [b"psubscribe", b"news.*", b"1"]))
+    check("PUBSUB NUMPAT", c.call("PUBSUB", "NUMPAT"), (":", b"1"))
+    check("a matching PUBLISH reaches the pattern", c.call("PUBLISH", "news.tech", "hello"), (":", b"1"))
+    check("it arrives as a pmessage", sub.read(), ("*", [b"pmessage", b"news.*", b"news.tech", b"hello"]))
+    check("PUBSUB NUMSUB leaves pattern subscribers out", c.call("PUBSUB", "NUMSUB", "news.tech"),
+          ("*", [b"news.tech", b"0"]))
+    sub.close()
+
     print("QUIT")
     check("QUIT acknowledges", c.call("QUIT"), ("+", b"OK"))
     check("QUIT closes the connection", c.at_eof(), True)

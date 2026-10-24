@@ -17,7 +17,7 @@ This project showcases:
 *   **System Design**: Clean separation of concerns (Networking, Protocol parsing, Command execution, Storage).
 *   **Concurrency**: A thread per connection for I/O, with command execution serialised — the same model Redis uses.
 *   **Persistence**: AOF logging with configurable durability, crash recovery, and compaction.
-*   **Real-time Messaging**: Pub/Sub with per-connection write serialisation.
+*   **Real-time Messaging**: Pub/Sub on channels and glob patterns. A subscriber that stops reading is disconnected rather than allowed to stall publishers.
 
 ---
 
@@ -52,6 +52,7 @@ graph TD
 *   **Protocol Handler**: Custom, zero-dependency RESP parser/writer. Binary-safe — bulk-string lengths are counted in bytes, so any payload survives a `SET`/`GET` round trip unchanged. Nesting depth, element counts and line lengths are all bounded, so a small malicious frame cannot cost the server unbounded memory or stack.
 *   **Storage Engine**: An in-memory database whose methods are individually synchronised, so **commands execute one at a time**. This mirrors Redis, which is also single-threaded for command execution: a read-modify-write like `INCR` is indivisible by construction, and there is no lock-ordering surface to get wrong. It does mean throughput does not scale with cores.
 *   **Expiry**: Lazy reclamation on access, plus a background cycle that samples keys with TTLs and keeps sampling while a pass finds many expired. Every read path goes through a single expiry gate, so a key that has lapsed is invisible to `GET`, `TYPE`, `EXISTS` and the hash commands alike.
+*   **Pub/Sub**: Publishers never write to a subscriber's socket. Each message is encoded once and queued for every subscriber, and a writer thread per subscriber sends its queue, so a subscriber that stops reading holds up only its own writer. Once more than `REDIS_PUBSUB_OUTPUT_LIMIT_MB` (32 MB by default, Redis's limit) is waiting for one subscriber, it is disconnected: it has missed messages, and closing tells it to reconnect and resync. A message still queued for a channel when the client unsubscribes from it is dropped, so no message arrives after its unsubscribe confirmation.
 *   **AOF Persistence Engine**:
     *   Logs write operations to an append-only file.
     *   Replays on startup, and refuses to start rather than serve a half-loaded dataset.
@@ -76,7 +77,9 @@ graph TD
 
 ### Pub/Sub System
 *   `SUBSCRIBE` / `UNSUBSCRIBE`: Listen to channels.
-*   `PUBLISH`: Broadcast messages to active subscribers.
+*   `PSUBSCRIBE` / `PUNSUBSCRIBE`: Listen to every channel matching a glob pattern, such as `news.*`.
+*   `PUBLISH`: Broadcast messages to active subscribers. The reply counts deliveries, so a client subscribed both to a channel and to a matching pattern counts twice, as in Redis.
+*   `PUBSUB CHANNELS`, `NUMSUB`, `NUMPAT`: Inspect who is listening. `NUMSUB` is what `@socket.io/redis-adapter` uses to count its servers.
 *   Writes to a connection are serialised, so a delivered message and a command reply cannot interleave on the same socket.
 
 ### Supported Commands
@@ -85,7 +88,7 @@ graph TD
 | **String** | `SET` (EX, PX, EXAT, PXAT, NX, XX, KEEPTTL), `SETNX`, `GET`, `GETSET`, `GETRANGE`, `MSET`, `MGET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT` |
 | **Hash** | `HSET`, `HSETNX`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS` |
 | **Keys** | `DEL`, `EXISTS`, `KEYS`, `TYPE`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `TTL`, `PTTL`, `FLUSHALL` |
-| **Pub/Sub** | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` |
+| **Pub/Sub** | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`) |
 | **Server** | `PING`, `ECHO`, `COMMAND`, `AUTH`, `QUIT`, `BGREWRITEAOF` |
 
 Not implemented: lists, sets, sorted sets, transactions, replication, RDB snapshots, and Lua scripting.
@@ -160,6 +163,10 @@ REDIS_TIMEOUT=0
 # Refuse connections past this many concurrent clients
 REDIS_MAX_CLIENTS=10000
 
+# Disconnect a subscriber once this many MB of messages are waiting for it (0 = no limit).
+# Publishers never wait on a subscriber, so one that stops reading builds a queue instead.
+REDIS_PUBSUB_OUTPUT_LIMIT_MB=32
+
 # Persistence Configuration
 REDIS_AOF_ENABLED=true
 REDIS_AOF_PATH=Persistence/appendonly.aof
@@ -171,7 +178,7 @@ REDIS_AOF_FSYNC=EVERYSEC
 
 ## 🧪 Testing
 
-363 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, TLS, and connection lifecycle over real sockets.
+396 unit and integration tests, covering protocol round trips, expiry semantics, AOF replay across simulated restarts, concurrent read-modify-write under contention, authentication, TLS, Pub/Sub with stuck subscribers, and connection lifecycle over real sockets.
 
 ```bash
 mvn test

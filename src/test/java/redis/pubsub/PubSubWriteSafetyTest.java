@@ -73,6 +73,13 @@ class PubSubWriteSafetyTest {
         pool.shutdown();
         assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
 
+        // The publishers only queued their messages; the subscriber's writer may still be
+        // sending them. Spliced frames never add up to the full count.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (countWellFormedMessages(sink.toString(Protocol.WIRE)) != 2 * perChannel
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
         String wire = sink.toString(Protocol.WIRE);
         assertEquals(2 * perChannel, countWellFormedMessages(wire),
             "frames were spliced together; a reply and a message shared the socket unsynchronised");
@@ -121,7 +128,9 @@ class PubSubWriteSafetyTest {
     @Test
     @DisplayName("A broken connection is reaped from every channel, not just the failing one")
     void deadClientIsRemovedEverywhere() {
-        PubSubManager ps = new PubSubManager();
+        // The writer runs on this thread, so the failed write has happened by the time
+        // publish() returns.
+        PubSubManager ps = new PubSubManager(PubSubManager.DEFAULT_OUTPUT_LIMIT_BYTES, Runnable::run);
         OutputStream broken = new OutputStream() {
             @Override
             public void write(int b) throws IOException {
@@ -132,10 +141,12 @@ class PubSubWriteSafetyTest {
         ps.subscribe(broken, "c1");
         ps.subscribe(broken, "c2");
 
-        assertEquals(0, ps.publish("c1", "m"), "a failed write still counted as delivered");
+        // PUBLISH counts the deliveries it queued, as Redis counts the output buffers it
+        // appended to. The write fails afterwards, on the subscriber's writer.
+        assertEquals(1, ps.publish("c1", "m"));
 
-        // Previously the client was dropped from c1 only, and stayed registered on c2
-        // where every later publish would retry it for the life of the process.
+        // Once, the client was dropped from c1 only, and stayed registered on c2 where every
+        // later publish would retry it for the life of the process.
         assertFalse(ps.isSubscribed(broken));
         assertEquals(0, ps.publish("c2", "m"));
     }
